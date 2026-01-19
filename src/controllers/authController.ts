@@ -1,13 +1,21 @@
+import type { Response, Request } from 'express';
 import {prisma} from '../config/db.js'
 import bcrypt from 'bcrypt'
-import {generateToken} from '../utils/generateToken.js'
+import {generateToken} from '../utils/generateToken'
 
-const register = async(req, res)=>{
-    const{name,email,password,surename} = req.body
+
+const register = async(req: Request, res: Response)=>{
+    try {
+        const{name,email,password} = req.body
+
+        // ЗАЩИТА: проверяем, что все поля на месте
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: "Please provide all fields" });
+        }
 
     // Check if user already exist
     const userExist = await prisma.user.findUnique({
-        where: {email:email}
+        where: { email }
     });
     if (userExist){
         return  res
@@ -25,17 +33,11 @@ const register = async(req, res)=>{
             name,
             email,
             password: hashedPassword,
-            surename: surename,
-           
         },
     })
-    
-
     //Generate JWT Token
-
-    const token = generateToken(user.id, res)
+    const token = generateToken(String(user.id), res)
     console.log(token)
-
     res.status(201).json({
         status:"success",
         data:{
@@ -43,17 +45,19 @@ const register = async(req, res)=>{
                 id:user.id,
                 name:name,
                 email:email,
-                surename: surename,
             },
             token,
         }
-
-    })
+   });
+} catch(error){
+    console.error(error);
+        res.status(500).json({ error: "Internal server error" });
+}
 
 
 }
 
-const login = async(req,res)=>{
+const login = async(req: Request, res: Response)=>{
     const{email,password} = req.body
     // Check if user email exist in the table
     const user = await prisma.user.findUnique({
@@ -71,7 +75,7 @@ const login = async(req,res)=>{
     }
     //Generate JWT Token
 
-    const token = generateToken(user.id, res)
+    const token = generateToken(String(user.id), res)
 
     
     res.status(201).json({
@@ -86,14 +90,14 @@ const login = async(req,res)=>{
                 }
                 })}
 
-const logout = async (req,res) =>{
+const logout = async (req: Request, res: Response) =>{
     res.cookie("jwt","",{
         httpOnly:true,
         expires: new Date(0),
     })
     res.status(200).json({
         status:"success",
-        message:"Logged out succesfukky"
+        message:"Logged out succesfully"
     })
 }
 

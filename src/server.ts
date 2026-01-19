@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import { config } from 'dotenv';
 import  {connectDB}  from './config/db';
+import authRoutes from '../src/routes/authRoutes.js'
 
 config();
 connectDB();
@@ -15,9 +16,7 @@ app.use(express.urlencoded({extended:true}))
 
 
 // app.use('/movies', movieRoutes)
-app.use('/auth', (req,res)=>{
-    res.json({message:'qqqq'})
-})
+app.use('/auth', authRoutes)
 // app.use('/watchlist', watchListRoutes)
 
 
