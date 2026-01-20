@@ -53,8 +53,6 @@ const register = async(req: Request, res: Response)=>{
     console.error(error);
         res.status(500).json({ error: "Internal server error" });
 }
-
-
 }
 
 const login = async(req: Request, res: Response)=>{
