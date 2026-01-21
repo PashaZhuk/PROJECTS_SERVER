@@ -3,6 +3,7 @@ import cors from 'cors'
 import { config } from 'dotenv';
 import  {connectDB}  from './config/db';
 import authRoutes from '../src/routes/authRoutes.js'
+import coockieParser from 'cookie-parser'
 
 config();
 connectDB();
@@ -24,6 +25,7 @@ app.use(cors({
 }))
 app.use(express.json());
 app.use(express.urlencoded({extended:true}))
+app.use(coockieParser())
 
 
 // app.use('/movies', movieRoutes)
