@@ -14,7 +14,7 @@ export const generateToken = (userId: string | number, res: Response): string =>
     // Генерируем токен
     // Используем явное приведение типов для опций, чтобы TS не ругался на expiresIn
     const token = jwt.sign(payload, secret, {
-        expiresIn: (process.env.JWT_EXPIRES_IN || "7d") as jwt.SignOptions['expiresIn']
+        expiresIn: (process.env.JWT_EXPIRES_IN || "8h") as jwt.SignOptions['expiresIn']
     });
 
     // Устанавливаем куки
@@ -22,7 +22,7 @@ export const generateToken = (userId: string | number, res: Response): string =>
         httpOnly: true, // Защита от кражи токена через JS (XSS)
         secure: process.env.NODE_ENV === "production", // Только HTTPS в продакшене
         sameSite: "strict", // Защита от CSRF атак
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 дней в миллисекундах
+        maxAge: 8*60*60*1000 // 8 часов
     });
 
     return token;

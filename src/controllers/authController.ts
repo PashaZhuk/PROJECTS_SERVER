@@ -83,7 +83,8 @@ const login = async(req: Request, res: Response)=>{
                 id:user.id,
                 name:user.name,
                 email:user.email,
-                role:user.role
+                role:user.role,
+                mustChangePassword: user.mustChangePassword
                 },
                 token
                 }
@@ -120,64 +121,6 @@ const getProfile = async (req: AuthRequest, res: Response) => {
     }
 };
 
-const getUsers = async (req: any, res: Response) => {
-  try {
-    // Извлекаем всех пользователей, исключая поле password для безопасности
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true,
-      },
-      orderBy: {
-        createdAt: 'desc', // Новые пользователи будут вверху списка
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      results: users.length,
-      data: users,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: 'Не удалось получить список пользователей',
-    });
-  }
-};
-
-export const deleteUser = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-
-    // Проверяем, не пытается ли админ удалить самого себя
-    if (Number(id) === (req as any).user.id) {
-      return res.status(400).json({ error: "Вы не можете удалить свою собственную учетную запись" });
-    }
-
-    const user = await prisma.user.findUnique({ where: { id: Number(id) } });
-
-    if (!user) {
-      return res.status(404).json({ error: "Пользователь не найден" });
-    }
-
-    await prisma.user.delete({
-      where: { id: Number(id) }
-    });
-
-    res.status(200).json({
-      status: "success",
-      message: "Пользователь успешно удален"
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Ошибка сервера при удалении" });
-  }
-};
 
 
-
-export {register,login,logout,getProfile, getUsers}
+export {register,login,logout,getProfile}
