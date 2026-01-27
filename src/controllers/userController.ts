@@ -16,6 +16,8 @@ const getUsers = async (req: any, res: Response) => {
         name: true,
         email: true,
         role: true,
+        companyName: true,
+        unp: true,
         createdAt: true,
       },
       orderBy: {

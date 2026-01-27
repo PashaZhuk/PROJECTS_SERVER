@@ -13,32 +13,67 @@ datasource db {
   provider = "postgresql"
 }
 
-// 1. Объявляем перечисление ролей
 enum Role {
-  USER
-  ADMIN
+  ADMIN    // Только управление пользователями
+  MANAGER  // Работа со всеми проектами
+  USER     // Партнер: видит только свои проекты
+}
+
+enum ProjectStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  REVISION
+  CLOSED
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  password  String
-  name      String
-  // 2. Добавляем поле роли с типом Role и значением по умолчанию USER
-  role      Role     @default(USER)
+  id                 Int       @id @default(autoincrement())
+  email              String    @unique
+  password           String
+  name               String
+  companyName        String?
+  unp                String?   @unique
+  role               Role      @default(USER)
+  mustChangePassword Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Проекты, созданные пользователем (если он Партнер)
+  projects           Project[] @relation("PartnerProjects")
   
-  // Если у тебя есть связь с проектами, оставь её
-  projects  Project[]
-  mustChangePassword Boolean  @default(true) // <-- Добавляем это
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Проекты, которые обработал этот менеджер
+  processedProjects  Project[] @relation("ManagerAction")
 }
 
-// Пример модели проекта (если она у тебя такая)
 model Project {
-  id          Int      @id @default(autoincrement())
-  title       String
-  description String?
-  userId      Int
-  user        User     @relation(fields: [userId], references: [id])
+  id              Int           @id @default(autoincrement())
+  number          String?       @unique 
+  status          ProjectStatus @default(PENDING)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  formType        String
+
+  // Связь с Партнером (обязательно)
+  partnerId       Int
+  partner         User          @relation("PartnerProjects", fields: [partnerId], references: [id])
+
+  // Кто из менеджеров внес последние изменения
+  lastEditorId    Int?
+  lastEditor      User?         @relation("ManagerAction", fields: [lastEditorId], references: [id])
+
+  // Основные поля
+  customerName    String        
+  customerInn     String        
+  purchaseMethod  String?       
+  executionDate   DateTime?     
+
+  // Все остальные поля из 15 форм
+  dynamicData     Json
+
+  @@index([partnerId])
+  @@index([customerInn])
+  @@index([status])
 }

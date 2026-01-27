@@ -4,6 +4,7 @@ import { config } from 'dotenv';
 import  {connectDB}  from './config/db';
 import authRoutes from '../src/routes/authRoutes.js'
 import userRoutes from '../src/routes/userRoutes'
+import projectRoutes from '../src/routes/projectRoutes'
 import coockieParser from 'cookie-parser'
 
 config();
@@ -32,6 +33,7 @@ app.use(coockieParser())
 // app.use('/movies', movieRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/user', userRoutes)
+app.use('/api/projects', projectRoutes)
 // app.use('/watchlist', watchListRoutes)
 
 

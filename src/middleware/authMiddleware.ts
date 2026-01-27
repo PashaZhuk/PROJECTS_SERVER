@@ -25,6 +25,7 @@ export const authMiddleware = async (
   // 1. Извлекаем токен из заголовка или кук
   if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
+    console.log("Token being verified:", token);
   } else if (req.cookies?.jwt) {
     token = req.cookies.jwt;
   }
@@ -36,10 +37,11 @@ export const authMiddleware = async (
   try {
     // 2. Верификация токена
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
-
+    console.log("Headers Auth:", req.headers.authorization);
     // 3. Поиск пользователя в БД
     const userId = Number(decoded.id)
     if (isNaN(userId)) {
+      
   return res.status(401).json({ error: "Invalid user ID format" });
 }
 
@@ -47,6 +49,7 @@ const user = await prisma.user.findUnique({
   where: { id: userId } // Теперь здесь число, и TS будет доволен
 });
     if (!user) {
+console.log("User not found in DB for ID:", decoded.id)
       return res.status(401).json({ error: "User no longer exists" });
     }
 
@@ -54,7 +57,8 @@ const user = await prisma.user.findUnique({
     req.user = user;
     next();
 
-  } catch (err) {
+  } catch (err:any ) {
+    console.log("JWT Verify Error:", err.message); // 4. Ошибка валидации самого токена
     return res.status(401).json({ error: "Not authorized, token failed" });
   }
 };
