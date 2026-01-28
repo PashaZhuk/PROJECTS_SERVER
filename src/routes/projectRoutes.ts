@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createProject, getProjects,updateProject } from '../controllers/projectController.js';
+import { createProject, getProjects,updateProject, updateProjectStatus } from '../controllers/projectController.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 
 const router = Router();
@@ -15,5 +15,9 @@ router.get('/', getProjects);
 
 // PUT /api/projects — обновление конкретного проекта по его id
 router.put('/:id', updateProject);
+
+router.patch('/:id/status', authMiddleware, updateProjectStatus);
+
+
 
 export default router;

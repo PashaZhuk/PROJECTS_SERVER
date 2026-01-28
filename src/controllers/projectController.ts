@@ -142,3 +142,54 @@ export const updateProject = async (req: any, res: Response) => {
     res.status(500).json({ error: "Ошибка при обновлении проекта" });
   }
 };
+
+export const updateProjectStatus = async (req: any, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // Ожидаем 'APPROVED' или 'REJECTED'
+
+    // 1. Проверка прав: только менеджер может менять статус
+    if (req.user.role !== 'MANAGER') {
+      return res.status(403).json({ error: "Только менеджеры могут изменять статус проекта" });
+    }
+
+    // 2. Валидация входящего статуса
+    const validStatuses = ['APPROVED', 'REJECTED', 'PENDING'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: "Недопустимый статус проекта" });
+    }
+
+    // 3. Проверяем существование проекта
+    const project = await prisma.project.findUnique({
+      where: { id: Number(id) }
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: "Проект не найден" });
+    }
+
+    // 4. Обновляем статус
+    const updatedProject = await prisma.project.update({
+      where: { id: Number(id) },
+      data: { 
+        status,
+        updatedAt: new Date()
+      }
+    });
+
+    // 5. МЕСТО ДЛЯ ЛОГИКИ 1С (при одобрении)
+    if (status === 'APPROVED') {
+      console.log(`[1C Sync] Проект ${id} одобрен менеджером ${req.user.id}. Отправка данных в 1С...`);
+      // Здесь будет вызов: await syncProjectWith1C(updatedProject);
+    }
+
+    res.json({
+      message: `Статус проекта успешно изменен на ${status}`,
+      project: updatedProject
+    });
+
+  } catch (error) {
+    console.error('Ошибка в updateProjectStatus:', error);
+    res.status(500).json({ error: "Ошибка при смене статуса проекта" });
+  }
+};

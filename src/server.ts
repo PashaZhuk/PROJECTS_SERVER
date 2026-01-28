@@ -21,7 +21,7 @@ app.use(cors({
   // Разрешаем браузеру отправлять куки (JWT) на сервер
   credentials: true,
   // Разрешаем стандартные методы
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE','PATCH'],
   // Разрешаем заголовки, если вы их используете
   allowedHeaders: ['Content-Type', 'Authorization']
 }))

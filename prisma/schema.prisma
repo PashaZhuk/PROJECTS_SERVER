@@ -39,6 +39,7 @@ model User {
   mustChangePassword Boolean   @default(true)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
+  lastSeen           DateTime  @default(now())
 
   // Проекты, созданные пользователем (если он Партнер)
   projects           Project[] @relation("PartnerProjects")

@@ -2,16 +2,12 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/db.js';
 
-// Описываем структуру данных внутри JWT
 interface JwtPayload {
   id: string;
-  // добавь другие поля, если ты их шифруешь в токен
 }
 
-// Расширяем интерфейс Request специально для этого файла
-// Или можно создать файл types/express.d.ts для глобального расширения
 interface AuthRequest extends Request {
-  user?: any; // Здесь можно указать тип User из Prisma
+  user?: any; 
 }
 
 export const authMiddleware = async (
@@ -19,13 +15,11 @@ export const authMiddleware = async (
   res: Response, 
   next: NextFunction
 ) => {
-  console.log("Auth middleware reached");
   let token: string | undefined;
 
-  // 1. Извлекаем токен из заголовка или кук
+  // 1. Получение токена
   if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
-    console.log("Token being verified:", token);
   } else if (req.cookies?.jwt) {
     token = req.cookies.jwt;
   }
@@ -37,28 +31,47 @@ export const authMiddleware = async (
   try {
     // 2. Верификация токена
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
-    console.log("Headers Auth:", req.headers.authorization);
-    // 3. Поиск пользователя в БД
-    const userId = Number(decoded.id)
-    if (isNaN(userId)) {
-      
-  return res.status(401).json({ error: "Invalid user ID format" });
-}
+    const userId = Number(decoded.id);
 
-const user = await prisma.user.findUnique({
-  where: { id: userId } // Теперь здесь число, и TS будет доволен
-});
+    if (isNaN(userId)) {
+      return res.status(401).json({ error: "Invalid user ID format" });
+    }
+
+    // 3. Проверка существования пользователя в БД
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
     if (!user) {
-console.log("User not found in DB for ID:", decoded.id)
+      console.log(`Auth Error: User with ID ${userId} not found`);
       return res.status(401).json({ error: "User no longer exists" });
     }
 
-    // 4. Записываем пользователя в объект запроса
+    // 4. Обновление статуса "Online" (lastSeen)
+    // Делаем это без await, чтобы не задерживать ответ пользователю (фон)
+    prisma.user.update({
+      where: { id: userId },
+      data: { lastSeen: new Date() }
+    }).catch(err => console.error("Background lastSeen update failed:", err));
+
+    // 5. Передача данных дальше
     req.user = user;
     next();
 
-  } catch (err:any ) {
-    console.log("JWT Verify Error:", err.message); // 4. Ошибка валидации самого токена
+  } catch (err: any) {
     return res.status(401).json({ error: "Not authorized, token failed" });
+  }
+};
+
+/**
+ * Middleware для защиты админ-роутов
+ */
+export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (req.user && (req.user.role === 'ADMIN' || req.user.role === 'MANAGER')) {
+    next();
+  } else {
+    res.status(403).json({ 
+      error: "Доступ запрещен. У вас недостаточно прав для выполнения этого действия" 
+    });
   }
 };

@@ -83,5 +83,46 @@ const changeDefaultPassword =async (req: AuthRequest, res: Response) => {
   res.json({ status: "success" });
 };
 
+const getAdminStats = async (req: Request, res: Response) => {
+  try {
+    const activeThreshold = new Date(Date.now() - 5 * 60 * 1000);
 
-export {getUsers,deleteUser, changeDefaultPassword}
+    const [totalUsers, totalManagers, onlineUsers, onlineManagers] = await Promise.all([
+      // Общее количество (все время)
+      prisma.user.count({ where: { role: 'USER' } }),
+      prisma.user.count({ where: { role: 'MANAGER' } }),
+      
+      // Онлайн Партнеры
+      prisma.user.count({
+        where: {
+          role: 'USER',
+          lastSeen: { gte: activeThreshold }
+        }
+      }),
+      
+      // Онлайн Менеджеры
+      prisma.user.count({
+        where: {
+          role: 'MANAGER',
+          lastSeen: { gte: activeThreshold }
+        }
+      })
+    ]);
+
+    res.status(200).json({
+      totalUsers,
+      totalManagers,
+      onlineCount: onlineUsers + onlineManagers, // Общая сумма для главного числа
+      details: {
+        onlineUsers,
+        onlineManagers
+      }
+    });
+  } catch (error) {
+    console.error('Admin Stats Error:', error);
+    res.status(500).json({ status: 'error', message: 'Не удалось собрать статистику' });
+  }
+};
+
+
+export {getUsers,deleteUser, changeDefaultPassword, getAdminStats}
