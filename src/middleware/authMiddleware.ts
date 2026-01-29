@@ -1,13 +1,14 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/db.js';
+import { type User, Role } from '../../generated/prisma/client.js'
 
 interface JwtPayload {
   id: string;
 }
 
 interface AuthRequest extends Request {
-  user?: any; 
+  user?: User; 
 }
 
 export const authMiddleware = async (
@@ -63,15 +64,3 @@ export const authMiddleware = async (
   }
 };
 
-/**
- * Middleware для защиты админ-роутов
- */
-export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
-  if (req.user && (req.user.role === 'ADMIN' || req.user.role === 'MANAGER')) {
-    next();
-  } else {
-    res.status(403).json({ 
-      error: "Доступ запрещен. У вас недостаточно прав для выполнения этого действия" 
-    });
-  }
-};

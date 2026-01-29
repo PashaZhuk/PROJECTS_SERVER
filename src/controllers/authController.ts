@@ -2,12 +2,12 @@ import type { Response, Request } from 'express';
 import { prisma } from '../config/db.js'
 import bcrypt from 'bcrypt'
 import { generateToken } from '../utils/generateToken'
+// Импортируем хелпер для обновления статистики
+import { emitStatsUpdate } from './userController'; 
 
 interface AuthRequest extends Request {
     user?: any;
 }
-
-
 
 const register = async (req: Request, res: Response) => {
   try {
@@ -35,16 +35,14 @@ const register = async (req: Request, res: Response) => {
         return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
       }
 
-      // Очистка данных (удаляем лишние пробелы)
       const cleanUnp = unp.toString().trim();
       const cleanCompanyName = companyName.trim();
 
-      // Ищем существующего партнера по УНП или Названию
       const partnerConflict = await prisma.user.findFirst({
         where: {
           OR: [
             { unp: cleanUnp },
-            { companyName: { equals: cleanCompanyName, mode: 'insensitive' } } // Без учета регистра
+            { companyName: { equals: cleanCompanyName, mode: 'insensitive' } }
           ]
         }
       });
@@ -76,6 +74,9 @@ const register = async (req: Request, res: Response) => {
       },
     });
 
+    // --- ОБНОВЛЕНИЕ СТАТИСТИКИ (НОВЫЙ ЮЗЕР) ---
+    emitStatsUpdate(req.app.get('io'));
+
     res.status(201).json({
       status: "success",
       message: "Пользователь успешно создан",
@@ -92,62 +93,105 @@ const register = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error("Registration Error:", error);
-    
-    // Обработка ошибок уникальности Prisma (на случай race condition)
     if (error.code === 'P2002') {
       const field = error.meta?.target;
       return res.status(400).json({ 
         error: `Данные в поле ${field} уже используются` 
       });
     }
-
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 };
 
-const login = async(req: Request, res: Response)=>{
-    const { email, password } = req.body
-    
-    const user = await prisma.user.findUnique({
-        where: { email : email }
-    });
+const login = async (req: Request, res: Response) => {
+    try {
+        const { email, password } = req.body;
+        
+        const user = await prisma.user.findUnique({
+            where: { email: email }
+        });
 
-    if (!user){
-        return res.status(401).json({ error: "Invalid email or password" })
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password)
-    if(!isPasswordValid){
-        return res.status(401).json({ error: "Invalid email or password" })
-    }
-
-    const token = generateToken(String(user.id), res)
-    
-    res.status(200).json({
-        status: "success",
-        data: {
-            user: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                mustChangePassword: user.mustChangePassword // Важно для фронтенда!
-            },
-            token
+        if (!user) {
+            return res.status(401).json({ error: "Invalid email or password" });
         }
-    })
-}
 
-const logout = async (req: Request, res: Response) =>{
-    res.cookie("jwt", "", {
-        httpOnly: true,
-        expires: new Date(0),
-    })
-    res.status(200).json({
-        status: "success",
-        message: "Logged out successfully"
-    })
-}
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: "Invalid email or password" });
+        }
+
+        // 1. Обновляем пользователя и СОХРАНЯЕМ результат в переменную
+        const updatedUser = await prisma.user.update({
+            where: { id: user.id },
+            data: { lastSeen: new Date() }
+        });
+
+        const token = generateToken(String(user.id), res);
+        const io = req.app.get('io');
+
+        // 2. ОБНОВЛЕНИЕ ОБЩЕЙ СТАТИСТИКИ (цифры в карточках)
+        emitStatsUpdate(io);
+
+        // 3. АДРЕСНОЕ ОБНОВЛЕНИЕ СТАТУСА (чтобы кружок в таблице загорелся мгновенно)
+        // Импортируй эту функцию из userController или пропиши логику прямо здесь:
+        if (io) {
+            io.to('admin_room').emit('user_status_changed', { 
+                userId: user.id, 
+                lastSeen: updatedUser.lastSeen 
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: {
+                user: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    role: user.role,
+                    mustChangePassword: user.mustChangePassword
+                },
+                token
+            }
+        });
+    } catch (error) {
+        console.error("Login error:", error);
+        res.status(500).json({ error: "Login error" });
+    }
+};
+
+const logout = async (req: any, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        const io = req.app.get('io');
+
+        console.log('Logout attempt for userId:', userId); // Проверка в консоли
+
+        if (userId) {
+            const oldDate = new Date(Date.now() - 10 * 60 * 1000);
+            
+            await prisma.user.update({
+                where: { id: userId },
+                data: { lastSeen: oldDate }
+            });
+
+            if (io) {
+                console.log(`Sending offline status for user ${userId} to admin_room`);
+                io.to('admin_room').emit('user_status_changed', { 
+                    userId, 
+                    lastSeen: oldDate 
+                });
+                emitStatsUpdate(io);
+            }
+        }
+
+        res.cookie("jwt", "", { httpOnly: true, expires: new Date(0) });
+        return res.status(200).json({ status: "success" });
+    } catch (error) {
+        console.error('Logout error:', error);
+        return res.status(500).json({ error: "Logout failed" });
+    }
+};
 
 const getProfile = async (req: AuthRequest, res: Response) => {
     try {

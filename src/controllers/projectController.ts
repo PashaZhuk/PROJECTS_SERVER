@@ -62,32 +62,65 @@ export const createProject = async (req: any, res: Response) => {
 
 export const getProjects = async (req: any, res: Response) => {
   try {
+    const userId = Number(req.user.id);
+    const userRole = req.user.role;
     let projects;
 
-    // Менеджеры видят всё для обработки
-    if (req.user.role === 'MANAGER') {
+    // Настраиваем подсчет непрочитанных сообщений через _count
+    const includeOptions: any = {
+      _count: {
+        select: {
+          messages: {
+            where: {
+              isRead: false,
+              senderId: { not: userId }
+            }
+          }
+        }
+      }
+    };
+
+    if (userRole === 'MANAGER') {
       projects = await prisma.project.findMany({
         include: { 
-          partner: { select: { name: true, companyName: true } } 
+          partner: { select: { id: true, name: true, companyName: true } },
+          ...includeOptions 
         },
         orderBy: { createdAt: 'desc' }
       });
     } 
-    // Партнеры (USER) видят только свои поданные заявки
-    else if (req.user.role === 'USER') {
+    else if (userRole === 'USER') {
       projects = await prisma.project.findMany({
-        where: { partnerId: req.user.id },
+        where: { partnerId: userId },
+        include: includeOptions,
         orderBy: { createdAt: 'desc' }
       });
     } 
-    // Админ по твоей просьбе не имеет доступа к проектам
     else {
-      return res.status(403).json({ error: "Доступ к проектам для вашей роли ограничен." });
+      return res.status(403).json({ error: "Доступ ограничен" });
     }
 
-    res.json(projects);
+    // ТРАНСФОРМАЦИЯ ДАННЫХ
+    const transformedProjects = projects.map((p: any) => {
+      // Извлекаем количество из объекта _count, который создает Prisma
+      const unreadCount = p._count?.messages || 0;
+      
+      // На всякий случай оставляем hasUnread для старой логики
+      const hasUnread = unreadCount > 0;
+      
+      // Удаляем служебный объект _count из финального ответа
+      const { _count, ...projectData } = p; 
+      
+      return { 
+        ...projectData, 
+        unreadCount, // Теперь это число (0, 1, 2...)
+        hasUnread 
+      };
+    });
+
+    res.json(transformedProjects);
   } catch (error) {
-    console.error('Ошибка в projectController (get):', error);
+    console.error('Ошибка в getProjects:', error);
     res.status(500).json({ error: "Ошибка при получении списка проектов" });
   }
 };
