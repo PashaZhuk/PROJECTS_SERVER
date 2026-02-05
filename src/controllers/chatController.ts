@@ -16,6 +16,7 @@ const getProjectMessages = async (req: any, res: Response) => {
       return res.status(404).json({ error: "Проект не найден" });
     }
 
+    // Проверка доступа
     if (userRole !== 'MANAGER' && project.partnerId !== userId) {
       return res.status(403).json({ error: "У вас нет доступа к переписке" });
     }
@@ -43,9 +44,21 @@ const sendMessage = async (req: any, res: Response) => {
     const { text } = req.body;
     const senderId = req.user.id;
 
+    // --- ЗАЩИТА ОТ АБЬЮЗА ---
+    // 1. Проверка на наличие текста
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({ error: "Сообщение не может быть пустым" });
+    }
+
+    // 2. Ограничение длины (3000 символов ~ 1.5 листа А4)
+    if (text.length > 3000) {
+      return res.status(400).json({ error: "Сообщение слишком длинное (макс. 3000 симв.)" });
+    }
+
+    // Создаем сообщение и подтягиваем данные отправителя
     const message = await prisma.message.create({
       data: {
-        text,
+        text: text.trim(),
         projectId: parseInt(projectId),
         senderId: senderId
       },
@@ -59,14 +72,18 @@ const sendMessage = async (req: any, res: Response) => {
     // --- ИНТЕГРАЦИЯ SOCKET.IO ---
     const io = req.app.get('io');
     if (io) {
-      // Отправляем сообщение в комнату проекта
-      io.to(`project_${projectId}`).emit('new_message', message);
+      const roomName = `project_${projectId}`;
       
-      // Отправляем уведомление менеджерам и партнеру для обновления бабблов в списке
+      // Отправляем объект message целиком (с вложенным sender)
+      io.to(roomName).emit('new_message', message);
+      
+      // Сигнал для обновления красных точек (бабблов) в общем списке проектов
       io.emit('unread_update', { 
         projectId: parseInt(projectId),
         senderId: senderId 
       });
+      
+      console.log(`✉️ [Chat] New message in PRJ-${projectId} from ${message.sender.name}`);
     }
 
     res.status(201).json(message);
@@ -81,6 +98,7 @@ const markAsRead = async (req: any, res: Response) => {
     const { projectId } = req.params;
     const userId = req.user.id;
 
+    // Обновляем только те сообщения, которые отправил НЕ текущий пользователь
     await prisma.message.updateMany({
       where: {
         projectId: parseInt(projectId),
@@ -92,10 +110,8 @@ const markAsRead = async (req: any, res: Response) => {
       }
     });
 
-    // --- ИНТЕГРАЦИЯ SOCKET.IO ---
     const io = req.app.get('io');
     if (io) {
-      // Сообщаем всем в комнате, что сообщения прочитаны (чтобы обновить галочки)
       io.to(`project_${projectId}`).emit('messages_read', { 
         projectId: parseInt(projectId), 
         readerId: userId 

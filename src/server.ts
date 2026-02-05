@@ -3,13 +3,14 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { config } from 'dotenv';
+import rateLimit from 'express-rate-limit'; // Добавляем импорт
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import cookieParser from 'cookie-parser';
-import { fetchStatsInternal } from './controllers/userController.js'; // Импортируем хелпер для первичной отправки
+import { fetchStatsInternal } from './controllers/userController.js';
 
 config();
 connectDB();
@@ -17,7 +18,24 @@ connectDB();
 const app = express();
 const PORT = 5001;
 
-// 1. СОЗДАНИЕ HTTP И SOCKET СЕРВЕРОВ
+// --- ЗАЩИТА (RATE LIMITING) ---
+
+// 1. Общий лимит для всего API (защита от DDoS)
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 500, // максимум 500 запросов с одного IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Слишком много запросов, попробуйте позже." }
+});
+
+// 2. Лимит конкретно для чата (защита от спама сообщениями)
+const chatLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 минута
+  max: 30, // не более 30 сообщений в минуту
+  message: { error: "Вы отправляете сообщения слишком часто. Подождите минуту." }
+});
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -26,13 +44,8 @@ const io = new Server(httpServer, {
   }
 });
 
-/**
- * ВАЖНО: Делаем объект io доступным во всех контроллерах.
- * Теперь в любом контроллере можно написать: req.app.get('io').emit(...)
- */
 app.set('io', io);
 
-// 2. MIDDLEWARES
 app.use(cors({
   origin: ['http://localhost:5173', 'http://192.168.85.110:5173'],
   credentials: true,
@@ -40,63 +53,69 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Ограничиваем размер входящего JSON (защита от "тяжелых" текстов)
+app.use(express.json({ limit: '10kb' })); 
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser());
 
-// 3. МАРШРУТЫ (ROUTES)
+// Применяем общую защиту ко всем роутам
+app.use('/api/', generalLimiter);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/projects', projectRoutes);
-app.use('/api/chat', chatRoutes);
 
-// 4. SOCKET.IO LOGIC
+// Для чата применяем дополнительный строгий лимит
+app.use('/api/chat', chatLimiter, chatRoutes);
+
+// --- SOCKET.IO LOGIC (без изменений) ---
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  // ... твой существующий код сокетов ...
+  console.log(`🟢 New connection: ${socket.id}`);
 
-  // --- ЛОГИКА ДЛЯ ПРОЕКТОВ ---
-  socket.on('join_project', (projectId) => {
-    socket.join(`project_${projectId}`);
-    console.log(`Socket ${socket.id} joined project_${projectId}`);
+  socket.on('join_self_room', (userId) => {
+    if (userId) {
+      const roomName = `user_${userId}`;
+      socket.join(roomName);
+      console.log(`👤 Socket ${socket.id} joined private room: ${roomName}`);
+    }
   });
 
-  // --- ЛОГИКА ДЛЯ АДМИН-ПАНЕЛИ (СТАТИСТИКА) ---
-  /**
-   * Когда админ заходит в Dashboard, фронтенд отправляет 'subscribe_admin_stats'.
-   * Мы помещаем его сокет в отдельную комнату 'admin_room'.
-   */
+ socket.on('join_project', ({ projectId, userName, userRole }) => {
+  const roomName = `project_${projectId}`;
+  socket.join(roomName);
+  
+  // Если зашел менеджер, уведомляем остальных
+  if (userRole === 'MANAGER') {
+    socket.to(roomName).emit('system_message', {
+      text: `Менеджер ${userName} присоединился к обсуждению`,
+      type: 'INFO',
+      createdAt: new Date()
+    });
+  }
+  
+  console.log(`📁 Socket ${socket.id} (${userName}) joined ${roomName}`);
+});
+
   socket.on('subscribe_admin_stats', async () => {
     socket.join('admin_room');
-    console.log(`Socket ${socket.id} joined admin_room`);
-
-    // Сразу после подписки отправляем свежие данные только этому сокету
     try {
       const initialStats = await fetchStatsInternal();
       socket.emit('stats_updated', initialStats);
     } catch (err) {
-      console.error("Error sending initial stats to socket:", err);
+      console.error("❌ Error sending initial stats:", err);
     }
   });
 
-  /**
-   * Если админ уходит со страницы статистики, он может отписаться
-   */
   socket.on('unsubscribe_admin_stats', () => {
     socket.leave('admin_room');
-    console.log(`Socket ${socket.id} left admin_room`);
   });
 
-  // --- ОТКЛЮЧЕНИЕ ---
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+  socket.on('disconnect', (reason) => {
+    console.log(`🔴 User disconnected: ${socket.id}`);
   });
 });
 
-// 5. ЗАПУСК
 httpServer.listen(PORT, () => {
-  console.log(`
-🚀 Server running on port ${PORT}
-🌐 API: http://localhost:${PORT}/api
-🔌 WebSockets: Enabled
-  `);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

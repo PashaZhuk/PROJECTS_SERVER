@@ -1,10 +1,9 @@
 import { type Response } from 'express';
 import { prisma } from '../config/db.js';
+import { emitStatsUpdate } from '../utils/socketHelpers.js';
 
 export const createProject = async (req: any, res: Response) => {
   try {
-    // Извлекаем основные поля, по которым будем фильтровать и которые нужны для 1С
-    // Все остальные поля из конфига попадут в массив otherData благодаря rest-оператору
     const { 
       formType, 
       customerName, 
@@ -14,7 +13,6 @@ export const createProject = async (req: any, res: Response) => {
       ...otherData 
     } = req.body;
 
-    // 1. Проверка на дубликаты по УНП (бизнес-логика защиты проекта)
     const existingProject = await prisma.project.findFirst({
       where: { 
         customerInn, 
@@ -28,8 +26,6 @@ export const createProject = async (req: any, res: Response) => {
       });
     }
 
-    // 2. Создаем запись в нашей базе
-    // Поле number оставляем null, так как его присвоит 1С
     const newProject = await prisma.project.create({
       data: {
         number: null, 
@@ -39,14 +35,11 @@ export const createProject = async (req: any, res: Response) => {
         customerInn,
         purchaseMethod,
         executionDate: executionDate ? new Date(executionDate) : null,
-        partnerId: req.user.id,
-        dynamicData: otherData // Сохраняем все остальные 20+ полей формы здесь
+        partnerId: Number(req.user.id),
+        dynamicData: otherData 
       }
     });
 
-    // 3. МЕСТО ДЛЯ БУДУЩЕЙ ИНТЕГРАЦИИ С 1С
-    // Когда HTTP-сервис 1С будет готов, здесь будет вызов функции:
-    // const responseFrom1C = await sendTo1C(newProject);
     console.log(`[Pending 1C] Проект создан в БД, готов к отправке в 1С. ID: ${newProject.id}`);
 
     res.status(201).json({
@@ -64,64 +57,78 @@ export const getProjects = async (req: any, res: Response) => {
   try {
     const userId = Number(req.user.id);
     const userRole = req.user.role;
-    let projects;
 
-    // Настраиваем подсчет непрочитанных сообщений через _count
-    const includeOptions: any = {
-      _count: {
-        select: {
-          messages: {
-            where: {
-              isRead: false,
-              senderId: { not: userId }
-            }
-          }
-        }
-      }
-    };
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
+    const search = (req.query.search as string || '').trim();
+    const skip = (page - 1) * limit;
 
-    if (userRole === 'MANAGER') {
-      projects = await prisma.project.findMany({
-        include: { 
-          partner: { select: { id: true, name: true, companyName: true } },
-          ...includeOptions 
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-    } 
-    else if (userRole === 'USER') {
-      projects = await prisma.project.findMany({
-        where: { partnerId: userId },
-        include: includeOptions,
-        orderBy: { createdAt: 'desc' }
-      });
-    } 
-    else {
-      return res.status(403).json({ error: "Доступ ограничен" });
+    let where: any = {};
+
+    // Ограничение по роли
+    if (userRole === 'USER') {
+      where.partnerId = userId;
     }
 
-    // ТРАНСФОРМАЦИЯ ДАННЫХ
-    const transformedProjects = projects.map((p: any) => {
-      // Извлекаем количество из объекта _count, который создает Prisma
-      const unreadCount = p._count?.messages || 0;
-      
-      // На всякий случай оставляем hasUnread для старой логики
-      const hasUnread = unreadCount > 0;
-      
-      // Удаляем служебный объект _count из финального ответа
-      const { _count, ...projectData } = p; 
-      
-      return { 
-        ...projectData, 
-        unreadCount, // Теперь это число (0, 1, 2...)
-        hasUnread 
+    // ИСПРАВЛЕННАЯ ЛОГИКА ПОИСКА
+    if (search) {
+      const cleanSearch = search.replace(/^PRJ-/i, ''); // Убираем префикс если он есть
+      const searchId = parseInt(cleanSearch);
+      const isSearchNumeric = /^\d+$/.test(cleanSearch);
+
+      where = {
+        ...where,
+        OR: [
+          // 1. Поиск по имени заказчика (всегда)
+          { customerName: { contains: search, mode: 'insensitive' } },
+          
+          // 2. Поиск по ID (только если введено число или PRJ-число)
+          ...(isSearchNumeric && !isNaN(searchId) ? [{ id: searchId }] : []),
+
+          // 3. Поиск по партнеру (только для менеджеров)
+          ...(userRole === 'MANAGER' || userRole === 'ADMIN' ? [
+            { partner: { companyName: { contains: search, mode: 'insensitive' } } },
+            { partner: { name: { contains: search, mode: 'insensitive' } } }
+          ] : [])
+          
+          // ЗАМЕТКА: поиск по customerInn удален намеренно, чтобы исключить лишний шум
+        ]
       };
+    }
+
+    const [projects, totalCount] = await Promise.all([
+      prisma.project.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          partner: { select: { id: true, name: true, companyName: true } },
+          messages: {
+            where: { isRead: false, senderId: { not: userId } },
+            take: 1
+          }
+        }
+      }),
+      prisma.project.count({ where })
+    ]);
+
+    const projectsWithBadge = projects.map((p: any) => ({
+      ...p,
+      hasUnread: p.messages.length > 0,
+      messages: undefined 
+    }));
+
+    res.json({
+      projects: projectsWithBadge,
+      totalPages: Math.ceil(totalCount / limit),
+      currentPage: page,
+      totalCount
     });
 
-    res.json(transformedProjects);
   } catch (error) {
     console.error('Ошибка в getProjects:', error);
-    res.status(500).json({ error: "Ошибка при получении списка проектов" });
+    res.status(500).json({ error: "Ошибка сервера при получении списка" });
   }
 };
 
@@ -137,21 +144,16 @@ export const updateProject = async (req: any, res: Response) => {
       ...otherData 
     } = req.body;
 
-    // Проверяем, существует ли проект и принадлежит ли он этому пользователю
-    // (Чтобы один партнер не мог отредактировать проект другого через Postman)
     const project = await prisma.project.findUnique({
       where: { id: Number(id) }
     });
 
-    if (!project) {
-      return res.status(404).json({ error: "Проект не найден" });
-    }
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
 
     if (project.partnerId !== req.user.id && req.user.role !== 'MANAGER') {
-      return res.status(403).json({ error: "У вас нет прав на редактирование этого проекта" });
+      return res.status(403).json({ error: "Доступ запрещен" });
     }
 
-    // Обновляем запись
     const updatedProject = await prisma.project.update({
       where: { id: Number(id) },
       data: {
@@ -160,69 +162,48 @@ export const updateProject = async (req: any, res: Response) => {
         customerInn,
         purchaseMethod,
         executionDate: executionDate ? new Date(executionDate) : null,
-        dynamicData: otherData, // Обновляем все динамические поля
-        updatedAt: new Date()   // Prisma обычно делает это сама, но можно указать явно
+        dynamicData: otherData,
+        updatedAt: new Date()
       }
     });
 
-    res.json({
-      message: "Проект успешно обновлен",
-      project: updatedProject
-    });
-
+    res.json({ message: "Проект обновлен", project: updatedProject });
   } catch (error) {
-    console.error('Ошибка в projectController (update):', error);
-    res.status(500).json({ error: "Ошибка при обновлении проекта" });
+    res.status(500).json({ error: "Ошибка при обновлении" });
   }
 };
 
 export const updateProjectStatus = async (req: any, res: Response) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; // Ожидаем 'APPROVED' или 'REJECTED'
+    const { status } = req.body;
 
-    // 1. Проверка прав: только менеджер может менять статус
-    if (req.user.role !== 'MANAGER') {
-      return res.status(403).json({ error: "Только менеджеры могут изменять статус проекта" });
+    if (req.user.role !== 'MANAGER' && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "Недостаточно прав" });
     }
 
-    // 2. Валидация входящего статуса
-    const validStatuses = ['APPROVED', 'REJECTED', 'PENDING'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: "Недопустимый статус проекта" });
-    }
-
-    // 3. Проверяем существование проекта
-    const project = await prisma.project.findUnique({
-      where: { id: Number(id) }
-    });
-
-    if (!project) {
-      return res.status(404).json({ error: "Проект не найден" });
-    }
-
-    // 4. Обновляем статус
     const updatedProject = await prisma.project.update({
       where: { id: Number(id) },
       data: { 
         status,
+        lastEditorId: req.user.id, 
         updatedAt: new Date()
+      },
+      include: {
+        partner: { select: { name: true, companyName: true, id: true } },
+        lastEditor: { select: { name: true } }
       }
     });
 
-    // 5. МЕСТО ДЛЯ ЛОГИКИ 1С (при одобрении)
-    if (status === 'APPROVED') {
-      console.log(`[1C Sync] Проект ${id} одобрен менеджером ${req.user.id}. Отправка данных в 1С...`);
-      // Здесь будет вызов: await syncProjectWith1C(updatedProject);
+    const io = req.app.get('io');
+    if (io) {
+      io.to('admin_room').emit('project_status_changed', updatedProject);
+      io.to(`user_${updatedProject.partnerId}`).emit('project_status_changed', updatedProject);
+      await emitStatsUpdate(io);
     }
 
-    res.json({
-      message: `Статус проекта успешно изменен на ${status}`,
-      project: updatedProject
-    });
-
+    res.json({ message: "Статус обновлен", project: updatedProject });
   } catch (error) {
-    console.error('Ошибка в updateProjectStatus:', error);
-    res.status(500).json({ error: "Ошибка при смене статуса проекта" });
+    res.status(500).json({ error: "Ошибка смены статуса" });
   }
 };
