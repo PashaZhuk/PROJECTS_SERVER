@@ -59,26 +59,59 @@ export const emitStatsUpdate = async (io: any) => {
 
 const getUsers = async (req: any, res: Response) => {
     try {
-        const users = await prisma.user.findMany({
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-                companyName: true,
-                unp: true,
-                createdAt: true,
-                lastSeen: true,
-            },
-            orderBy: { createdAt: 'desc' },
-        });
+        // 1. Получаем параметры из строки запроса
+        const { page = 1, limit = 10, search = '', role = '' } = req.query;
 
+        // Расчеты для пагинации
+        const take = Number(limit);
+        const skip = (Number(page) - 1) * take;
+
+        // 2. Формируем условия фильтрации (WHERE)
+        const where: any = {
+            // Если роль передана и она не 'ALL', фильтруем по ней
+            ...(role && role !== 'ALL' && { role }),
+            // Если есть поисковый запрос
+            ...(search && {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { email: { contains: search, mode: 'insensitive' } },
+                    { companyName: { contains: search, mode: 'insensitive' } },
+                    { unp: { contains: search, mode: 'insensitive' } },
+                ],
+            }),
+        };
+
+        // 3. Выполняем запросы параллельно: сами данные и общее количество
+        const [users, totalCount] = await Promise.all([
+            prisma.user.findMany({
+                where,
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    role: true,
+                    companyName: true,
+                    unp: true,
+                    createdAt: true,
+                    lastSeen: true,
+                },
+                orderBy: { createdAt: 'desc' },
+                take: take,
+                skip: skip,
+            }),
+            prisma.user.count({ where }),
+        ]);
+
+        // 4. Отдаем ответ в формате, который теперь поймет фронтенд
         res.status(200).json({
             status: 'success',
-            results: users.length,
-            data: users,
+            users, // Сами данные
+            totalCount, // Общее кол-во (для пагинации)
+            totalPages: Math.ceil(totalCount / take), // Всего страниц
+            currentPage: Number(page)
         });
     } catch (error) {
+        console.error('API Error:', error);
         res.status(500).json({
             status: 'error',
             message: 'Не удалось получить список пользователей',
