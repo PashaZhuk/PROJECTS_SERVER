@@ -65,62 +65,65 @@ export const getProjects = async (req: any, res: Response) => {
 
     let where: any = {};
 
-    // Ограничение по роли
     if (userRole === 'USER') {
       where.partnerId = userId;
     }
 
-    // ИСПРАВЛЕННАЯ ЛОГИКА ПОИСКА
     if (search) {
-      const cleanSearch = search.replace(/^PRJ-/i, ''); // Убираем префикс если он есть
+      const cleanSearch = search.replace(/^PRJ-/i, '');
       const searchId = parseInt(cleanSearch);
       const isSearchNumeric = /^\d+$/.test(cleanSearch);
 
       where = {
         ...where,
         OR: [
-          // 1. Поиск по имени заказчика (всегда)
           { customerName: { contains: search, mode: 'insensitive' } },
-          
-          // 2. Поиск по ID (только если введено число или PRJ-число)
           ...(isSearchNumeric && !isNaN(searchId) ? [{ id: searchId }] : []),
-
-          // 3. Поиск по партнеру (только для менеджеров)
           ...(userRole === 'MANAGER' || userRole === 'ADMIN' ? [
             { partner: { companyName: { contains: search, mode: 'insensitive' } } },
             { partner: { name: { contains: search, mode: 'insensitive' } } }
           ] : [])
-          
-          // ЗАМЕТКА: поиск по customerInn удален намеренно, чтобы исключить лишний шум
         ]
       };
     }
 
+    // ВАЖНО: Сортировка происходит на уровне БД. 
+    // Поскольку мы обновляем updatedAt в sendMessage, 
+    // проект с 6-й страницы получит свежий Timestamp и вылетит на 1-ю страницу.
     const [projects, totalCount] = await Promise.all([
       prisma.project.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { updatedAt: 'desc' }, // Главный двигатель сортировки
         include: {
           partner: { select: { id: true, name: true, companyName: true } },
-          messages: {
-            where: { isRead: false, senderId: { not: userId } },
-            take: 1
+          _count: {
+            select: {
+              messages: {
+                where: { isRead: false, senderId: { not: userId } }
+              }
+            }
           }
         }
       }),
       prisma.project.count({ where })
     ]);
 
-    const projectsWithBadge = projects.map((p: any) => ({
+    // Мапим данные для фронтенда
+    const processedProjects = projects.map((p: any) => ({
       ...p,
-      hasUnread: p.messages.length > 0,
-      messages: undefined 
+      unreadCount: p._count.messages,
+      hasUnread: p._count.messages > 0,
+      _count: undefined
     }));
 
+    // УБИРАЕМ ручную сортировку .sort(), так как она ломает логику пагинации.
+    // Если на 1-й странице есть 10 проектов, отсортированных по updatedAt, 
+    // и среди них есть непрочитанные — они и так будут в самом верху благодаря БД.
+
     res.json({
-      projects: projectsWithBadge,
+      projects: processedProjects,
       totalPages: Math.ceil(totalCount / limit),
       currentPage: page,
       totalCount

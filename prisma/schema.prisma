@@ -41,43 +41,36 @@ model User {
   updatedAt          DateTime  @updatedAt
   lastSeen           DateTime  @default(now())
 
-  // Проекты, созданные пользователем (если он Партнер)
+  // Связи
   projects           Project[] @relation("PartnerProjects")
-  
-  // Проекты, которые обработал этот менеджер
   processedProjects  Project[] @relation("ManagerAction")
-  //сообщения в чатике
-  messages Message[]
-
+  messages           Message[]
 }
 
 model Project {
-  id              Int           @id @default(autoincrement())
-  number          String?       @unique 
-  status          ProjectStatus @default(PENDING)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id             Int           @id @default(autoincrement())
+  number         String?       @unique 
+  status         ProjectStatus @default(PENDING)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  formType       String
 
-  formType        String
+  // ПАРТНЕР: Cascade. Если удаляем партнера — его проекты удаляются автоматически.
+  partnerId      Int
+  partner        User          @relation("PartnerProjects", fields: [partnerId], references: [id], onDelete: Cascade)
 
-  // Связь с Партнером (обязательно)
-  partnerId       Int
-  partner         User          @relation("PartnerProjects", fields: [partnerId], references: [id])
+  // МЕНЕДЖЕР: SetNull. Если менеджер удален — проект остается, но поле редактора очищается.
+  lastEditorId   Int?
+  lastEditor     User?         @relation("ManagerAction", fields: [lastEditorId], references: [id], onDelete: SetNull)
 
-  // Кто из менеджеров внес последние изменения
-  lastEditorId    Int?
-  lastEditor      User?         @relation("ManagerAction", fields: [lastEditorId], references: [id])
+  customerName   String        
+  customerInn    String        
+  purchaseMethod String?       
+  executionDate  DateTime?     
+  dynamicData    Json
 
-  // Основные поля
-  customerName    String        
-  customerInn     String        
-  purchaseMethod  String?       
-  executionDate   DateTime?     
-
-  // Все остальные поля из 15 форм
-  dynamicData     Json
-  //сообщения в чатике
-  messages Message[]
+  // СООБЩЕНИЯ: Cascade. Удаление проекта удаляет весь его чат.
+  messages       Message[]
 
   @@index([partnerId])
   @@index([customerInn])
@@ -85,16 +78,16 @@ model Project {
 }
 
 model Message {
-  id        Int      @id @default(autoincrement())
-  text      String
-  createdAt DateTime @default(now())
-  isRead    Boolean @default(false)
+  id         Int      @id @default(autoincrement())
+  text       String
+  createdAt  DateTime @default(now())
+  isRead     Boolean  @default(false)
   
-  // Связь с проектом
-  projectId Int
-  project   Project  @relation(fields: [projectId], references: [id])
+  // ПРОЕКТ: Cascade. Сообщения привязаны к жизни проекта.
+  projectId  Int
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  // Связь с автором (кто отправил)
-  senderId  Int
-  sender    User     @relation(fields: [senderId], references: [id])
+  // АВТОР: Cascade. Если удаляем юзера — его сообщения удаляются.
+  senderId   Int
+  sender     User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
 }

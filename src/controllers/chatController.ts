@@ -43,47 +43,51 @@ const sendMessage = async (req: any, res: Response) => {
     const { projectId } = req.params;
     const { text } = req.body;
     const senderId = req.user.id;
+    const parsedProjectId = parseInt(projectId);
 
-    // --- ЗАЩИТА ОТ АБЬЮЗА ---
-    // 1. Проверка на наличие текста
     if (!text || text.trim().length === 0) {
       return res.status(400).json({ error: "Сообщение не может быть пустым" });
     }
 
-    // 2. Ограничение длины (3000 символов ~ 1.5 листа А4)
     if (text.length > 3000) {
       return res.status(400).json({ error: "Сообщение слишком длинное (макс. 3000 симв.)" });
     }
 
-    // Создаем сообщение и подтягиваем данные отправителя
-    const message = await prisma.message.create({
-      data: {
-        text: text.trim(),
-        projectId: parseInt(projectId),
-        senderId: senderId
-      },
-      include: {
-        sender: {
-          select: { id: true, name: true, role: true }
+    // --- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---
+    // Используем транзакцию, чтобы и сообщение создалось, и проект обновился одновременно
+    const [message] = await prisma.$transaction([
+      // 1. Создаем сообщение
+      prisma.message.create({
+        data: {
+          text: text.trim(),
+          projectId: parsedProjectId,
+          senderId: senderId
+        },
+        include: {
+          sender: {
+            select: { id: true, name: true, role: true }
+          }
         }
-      }
-    });
+      }),
+      // 2. ОБНОВЛЯЕМ ПРОЕКТ (меняем дату updatedAt)
+      // Это заставит проект подняться на 1 страницу в списке getProjects
+      prisma.project.update({
+        where: { id: parsedProjectId },
+        data: { updatedAt: new Date() } 
+      })
+    ]);
 
-    // --- ИНТЕГРАЦИЯ SOCKET.IO ---
     const io = req.app.get('io');
     if (io) {
-      const roomName = `project_${projectId}`;
-      
-      // Отправляем объект message целиком (с вложенным sender)
+      const roomName = `project_${parsedProjectId}`;
       io.to(roomName).emit('new_message', message);
       
-      // Сигнал для обновления красных точек (бабблов) в общем списке проектов
       io.emit('unread_update', { 
-        projectId: parseInt(projectId),
+        projectId: parsedProjectId,
         senderId: senderId 
       });
       
-      console.log(`✉️ [Chat] New message in PRJ-${projectId} from ${message.sender.name}`);
+      console.log(`✉️ [Chat] New message in PRJ-${parsedProjectId} from ${message.sender.name} - Project bumped up!`);
     }
 
     res.status(201).json(message);
