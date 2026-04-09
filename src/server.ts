@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { config } from 'dotenv';
-import rateLimit from 'express-rate-limit'; // Добавляем импорт
+import rateLimit from 'express-rate-limit';
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
@@ -18,21 +18,17 @@ connectDB();
 const app = express();
 const PORT = 5001;
 
-// --- ЗАЩИТА (RATE LIMITING) ---
-
-// 1. Общий лимит для всего API (защита от DDoS)
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 500, // максимум 500 запросов с одного IP
+  windowMs: 15 * 60 * 1000,
+  max: 500,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Слишком много запросов, попробуйте позже." }
 });
 
-// 2. Лимит конкретно для чата (защита от спама сообщениями)
 const chatLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 минута
-  max: 30, // не более 30 сообщений в минуту
+  windowMs: 1 * 60 * 1000,
+  max: 30,
   message: { error: "Вы отправляете сообщения слишком часто. Подождите минуту." }
 });
 
@@ -53,24 +49,18 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Ограничиваем размер входящего JSON (защита от "тяжелых" текстов)
 app.use(express.json({ limit: '10kb' })); 
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser());
 
-// Применяем общую защиту ко всем роутам
 app.use('/api/', generalLimiter);
-
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/projects', projectRoutes);
-
-// Для чата применяем дополнительный строгий лимит
 app.use('/api/chat', chatLimiter, chatRoutes);
 
-// --- SOCKET.IO LOGIC (без изменений) ---
+// --- SOCKET.IO LOGIC (ИСПРАВЛЕННЫЙ) ---
 io.on('connection', (socket) => {
-  // ... твой существующий код сокетов ...
   console.log(`🟢 New connection: ${socket.id}`);
 
   socket.on('join_self_room', (userId) => {
@@ -81,21 +71,25 @@ io.on('connection', (socket) => {
     }
   });
 
- socket.on('join_project', ({ projectId, userName, userRole }) => {
-  const roomName = `project_${projectId}`;
-  socket.join(roomName);
-  
-  // Если зашел менеджер, уведомляем остальных
-  if (userRole === 'MANAGER') {
-    socket.to(roomName).emit('system_message', {
-      text: `Менеджер ${userName} присоединился к обсуждению`,
-      type: 'INFO',
-      createdAt: new Date()
-    });
-  }
-  
-  console.log(`📁 Socket ${socket.id} (${userName}) joined ${roomName}`);
-});
+  socket.on('join_project', ({ projectId, userId, userName, userRole }) => {
+    const roomName = `project_${projectId}`;
+    socket.join(roomName);
+    
+    socket.data.userId = userId;
+    socket.data.userName = userName;
+    socket.data.userRole = userRole;
+    socket.data.projectId = projectId;
+    
+    console.log(`📁 Socket ${socket.id} (User: ${userId}, ${userName}, Role: ${userRole}) joined ${roomName}`);
+    
+    if (userRole === 'MANAGER') {
+      socket.to(roomName).emit('system_message', {
+        text: `Менеджер ${userName} присоединился к обсуждению`,
+        type: 'INFO',
+        createdAt: new Date()
+      });
+    }
+  });
 
   socket.on('subscribe_admin_stats', async () => {
     socket.join('admin_room');
