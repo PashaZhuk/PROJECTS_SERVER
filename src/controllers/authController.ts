@@ -1,9 +1,9 @@
 import type { Response, Request } from 'express';
 import { prisma } from '../config/db.js'
 import bcrypt from 'bcrypt'
+import jwt from 'jsonwebtoken'
 import { generateToken } from '../utils/generateToken'
-// Импортируем хелпер для обновления статистики
-import { emitStatsUpdate } from './userController'; 
+import { emitStatsUpdate } from './userController';
 
 interface AuthRequest extends Request {
     user?: any;
@@ -13,23 +13,19 @@ const register = async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, unp, companyName } = req.body;
 
-    // 1. Базовая валидация обязательных полей
     if (!name || !email || !password) {
       return res.status(400).json({ error: "Пожалуйста, заполните все обязательные поля" });
     }
 
-    // 2. Проверка существования Email
     const userExist = await prisma.user.findUnique({ where: { email } });
     if (userExist) {
       return res.status(400).json({ error: "Пользователь с таким Email уже существует" });
     }
 
-    // 3. БЕЗОПАСНОСТЬ: Ограничение на создание ADMIN
     if (role === 'ADMIN') {
       return res.status(403).json({ error: "Недостаточно прав для создания администратора" });
     }
 
-    // 4. СПЕЦИФИЧЕСКАЯ ПРОВЕРКА ДЛЯ ПАРТНЕРА (ROLE === 'USER')
     if (role === 'USER') {
       if (!unp || !companyName) {
         return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
@@ -49,19 +45,17 @@ const register = async (req: Request, res: Response) => {
 
       if (partnerConflict) {
         const isUnpMatch = partnerConflict.unp === cleanUnp;
-        return res.status(400).json({ 
-          error: isUnpMatch 
-            ? `Партнер с УНП ${cleanUnp} уже зарегистрирован` 
-            : `Компания "${cleanCompanyName}" уже существует в системе` 
+        return res.status(400).json({
+          error: isUnpMatch
+            ? `Партнер с УНП ${cleanUnp} уже зарегистрирован`
+            : `Компания "${cleanCompanyName}" уже существует в системе`
         });
       }
     }
 
-    // 5. Хеширование пароля
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 6. Создание пользователя
     const user = await prisma.user.create({
       data: {
         name: name.trim(),
@@ -74,7 +68,6 @@ const register = async (req: Request, res: Response) => {
       },
     });
 
-    // --- ОБНОВЛЕНИЕ СТАТИСТИКИ (НОВЫЙ ЮЗЕР) ---
     emitStatsUpdate(req.app.get('io'));
 
     res.status(201).json({
@@ -95,8 +88,8 @@ const register = async (req: Request, res: Response) => {
     console.error("Registration Error:", error);
     if (error.code === 'P2002') {
       const field = error.meta?.target;
-      return res.status(400).json({ 
-        error: `Данные в поле ${field} уже используются` 
+      return res.status(400).json({
+        error: `Данные в поле ${field} уже используются`
       });
     }
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
@@ -106,10 +99,8 @@ const register = async (req: Request, res: Response) => {
 const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
-        
-        const user = await prisma.user.findUnique({
-            where: { email: email }
-        });
+
+        const user = await prisma.user.findUnique({ where: { email } });
 
         if (!user) {
             return res.status(401).json({ error: "Invalid email or password" });
@@ -120,7 +111,6 @@ const login = async (req: Request, res: Response) => {
             return res.status(401).json({ error: "Invalid email or password" });
         }
 
-        // 1. Обновляем пользователя и СОХРАНЯЕМ результат в переменную
         const updatedUser = await prisma.user.update({
             where: { id: user.id },
             data: { lastSeen: new Date() }
@@ -129,15 +119,12 @@ const login = async (req: Request, res: Response) => {
         const token = generateToken(String(user.id), res);
         const io = req.app.get('io');
 
-        // 2. ОБНОВЛЕНИЕ ОБЩЕЙ СТАТИСТИКИ (цифры в карточках)
         emitStatsUpdate(io);
 
-        // 3. АДРЕСНОЕ ОБНОВЛЕНИЕ СТАТУСА (чтобы кружок в таблице загорелся мгновенно)
-        // Импортируй эту функцию из userController или пропиши логику прямо здесь:
         if (io) {
-            io.to('admin_room').emit('user_status_changed', { 
-                userId: user.id, 
-                lastSeen: updatedUser.lastSeen 
+            io.to('admin_room').emit('user_status_changed', {
+                userId: user.id,
+                lastSeen: updatedUser.lastSeen
             });
         }
 
@@ -160,36 +147,55 @@ const login = async (req: Request, res: Response) => {
     }
 };
 
-const logout = async (req: any, res: Response) => {
+// ⚠️ БЕЗ protect middleware на роуте — убери его в routes/auth.ts
+// router.post('/logout', logout)  ← без protect
+const logout = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // reason и userId приходят из тела запроса (клиент всегда их передаёт)
+        const { reason = 'manual', userId: bodyUserId } = req.body;
+
         const io = req.app.get('io');
 
-        console.log('Logout attempt for userId:', userId); // Проверка в консоли
+        // Пытаемся дополнительно верифицировать userId из куки (если она ещё жива)
+        let resolvedUserId = bodyUserId;
+        try {
+            const token = req.cookies?.jwt;
+            if (token) {
+                const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+                resolvedUserId = decoded?.userId || bodyUserId;
+            }
+        } catch {
+            // Кука протухла или невалидна — используем userId из тела запроса
+        }
 
-        if (userId) {
+        console.log(`[Auth] Logout — userId: ${resolvedUserId}, reason: ${reason}`);
+
+        if (resolvedUserId) {
             const oldDate = new Date(Date.now() - 10 * 60 * 1000);
-            
+
             await prisma.user.update({
-                where: { id: userId },
+                where: { id: resolvedUserId },
                 data: { lastSeen: oldDate }
             });
 
             if (io) {
-                console.log(`Sending offline status for user ${userId} to admin_room`);
-                io.to('admin_room').emit('user_status_changed', { 
-                    userId, 
-                    lastSeen: oldDate 
+                io.to('admin_room').emit('user_status_changed', {
+                    userId: resolvedUserId,
+                    lastSeen: oldDate
                 });
                 emitStatsUpdate(io);
             }
         }
 
+        // Очищаем куку в любом случае
         res.cookie("jwt", "", { httpOnly: true, expires: new Date(0) });
-        return res.status(200).json({ status: "success" });
+        return res.status(200).json({ status: "success", reason });
+
     } catch (error) {
         console.error('Logout error:', error);
-        return res.status(500).json({ error: "Logout failed" });
+        // Даже при ошибке чистим куку
+        res.cookie("jwt", "", { httpOnly: true, expires: new Date(0) });
+        return res.status(200).json({ status: "success" });
     }
 };
 

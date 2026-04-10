@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  db:
+    # Используем версию 18.3 на базе Alpine (она самая легкая)
+    image: postgres:18.3-alpine
+    container_name: projects_postgres_18
+    restart: always
+    environment:
+      # Эти данные создадут администратора и базу при первом запуске
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: 3619696ipm
+      POSTGRES_DB: b2b_portal
+    ports:
+      - "5432:5432"
+    volumes:
+      # Это "флешка", на которой будут лежать ваши данные
+      - postgres_data_v18:/var/lib/postgresql/data
+
+volumes:
+  postgres_data_v18:
