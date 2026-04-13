@@ -6,14 +6,10 @@ async function main() {
   console.log('🚀 Начало процесса сидирования...');
 
   // 1. ПОЛНАЯ ОЧИСТКА И СБРОС ID
-  // Используем raw query для PostgreSQL, чтобы обнулить автоинкремент (Serial/Identity)
   console.log('🧹 Очистка таблиц и сброс счетчиков ID...');
-  
   const tables = ['Message', 'Project', 'User'];
-  
   for (const table of tables) {
     try {
-      // CASCADE удаляет зависимые записи, RESTART IDENTITY сбрасывает счетчик на 1
       await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" RESTART IDENTITY CASCADE;`);
     } catch (error) {
       console.error(`⚠️ Ошибка при очистке таблицы ${table}:`, error);
@@ -23,21 +19,34 @@ async function main() {
   // 2. ПОДГОТОВКА ПАРОЛЕЙ
   const salt = await bcrypt.genSalt(10);
   const adminPassword = await bcrypt.hash('admin', salt);
+  const managerPassword = await bcrypt.hash('manager', salt);
   const userPassword = await bcrypt.hash('1111', salt);
 
-  // 3. СОЗДАНИЕ АДМИНИСТРАТОРА (теперь он точно будет с ID: 1)
+  // 3. СОЗДАНИЕ АДМИНИСТРАТОРА
   const admin = await prisma.user.create({
     data: {
-      email: 'admin@gmail.com',
+      email: 'admin@test.com',
       name: 'Главный Администратор',
       password: adminPassword,
       role: Role.ADMIN,
       mustChangePassword: false,
     },
   });
-  console.log(`✅ Администратор создан: ${admin.email} (ID: ${admin.id}, пароль: admin)`);
+  console.log(`✅ Администратор создан: ${admin.email} (пароль: admin)`);
 
-  // 4. ДАННЫЕ ДЛЯ КОМПАНИЙ
+  // 4. СОЗДАНИЕ МЕНЕДЖЕРА (Для тестирования роли MANAGER)
+  const manager = await prisma.user.create({
+    data: {
+      email: 'manager@test.com',
+      name: 'Иван Менеджер',
+      password: managerPassword,
+      role: Role.MANAGER,
+      mustChangePassword: false,
+    },
+  });
+  console.log(`✅ Менеджер создан: ${manager.email} (пароль: manager)`);
+
+  // 5. ДАННЫЕ ДЛЯ КОМПАНИЙ
   const companies = [
     'ИнфоТех Солюшнс', 'ДатаЦентр Системс', 'СмартКом Телеком', 'ТехноГлобал Групп',
     'ВКС Лидер', 'Нетворк Про', 'Диджитал Спейс', 'Системные Технологии',
@@ -51,17 +60,17 @@ async function main() {
 
   console.log(`👥 Создание 20 партнеров и проектов...`);
 
-  // 5. ГЕНЕРАЦИЯ ПАРТНЕРОВ И ИХ ПРОЕКТОВ
+  // 6. ГЕНЕРАЦИЯ ПАРТНЕРОВ И ИХ ПРОЕКТОВ
   for (let i = 0; i < companies.length; i++) {
     const partner = await prisma.user.create({
       data: {
-        email: `partner${i + 1}@gmail.com`,
+        email: `partner${i + 1}@test.com`,
         password: userPassword,
         name: `Иван Иванов ${i + 1}`,
         companyName: companies[i],
         unp: `190${100000 + i}`,
         role: Role.USER,
-        mustChangePassword: true,
+        mustChangePassword: true, // Чтобы проверить флоу смены пароля
       },
     });
 
@@ -87,6 +96,8 @@ async function main() {
   }
 
   console.log('✨ Сидирование успешно завершено.');
+  console.log('⚠️ ВАЖНО: После запуска сида очистите куки в браузере (F12 -> Application -> Cookies -> Clear All),');
+  console.log('   так как старые sessionId стали невалидными из-за пересоздания пользователей.');
 }
 
 main()

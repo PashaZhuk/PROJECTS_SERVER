@@ -50,9 +50,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Разрешаем запросы без origin (например, мобильные приложения или curl)
       if (!origin) return callback(null, true);
-      
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -64,6 +62,7 @@ const io = new Server(httpServer, {
   }
 });
 
+// Передаем io в приложение, чтобы использовать в контроллерах
 app.set('io', io);
 
 // --- Middleware ---
@@ -96,6 +95,7 @@ app.use('/api/chat', chatLimiter, chatRoutes);
 io.on('connection', (socket) => {
   console.log(`🟢 New connection: ${socket.id}`);
 
+  // Комната для мгновенного разлогина
   socket.on('join_self_room', (userId) => {
     if (userId) {
       const roomName = `user_${userId}`;
