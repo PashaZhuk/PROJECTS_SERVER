@@ -59,7 +59,7 @@ export const authMiddleware = async (
     const diffMinutes = diffMs / (1000 * 60);
 
     // Лимиты в минутах
-    const LIMIT_USER = 1;      // 30 минут для партнеров
+    const LIMIT_USER = 30;      // 30 минут для партнеров
     const LIMIT_OTHERS = 120;   // 2 часа для менеджеров и админов
 
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;

@@ -12,7 +12,7 @@ services:
       POSTGRES_PASSWORD: 3619696ipm
       POSTGRES_DB: b2b_portal
     ports:
-      - "5432:5432"
+      - "5433:5433"
     volumes:
       # Это "флешка", на которой будут лежать ваши данные
       - postgres_data_v18:/var/lib/postgresql/data
