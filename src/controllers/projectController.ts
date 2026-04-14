@@ -37,8 +37,20 @@ export const createProject = async (req: any, res: Response) => {
         executionDate: executionDate ? new Date(executionDate) : null,
         partnerId: Number(req.user.id),
         dynamicData: otherData 
+      },
+      // Включаем partner чтобы менеджер сразу видел компанию
+      include: {
+        partner: { select: { id: true, name: true, companyName: true } }
       }
     });
+
+    const io = req.app.get('io');
+    if (io) {
+      // Все вкладки этого партнера получат новый проект
+      io.to(`user_${req.user.id}`).emit('project_created', newProject);
+      // Менеджеры в admin_room тоже узнают о новой заявке
+      io.to('admin_room').emit('project_created', newProject);
+    }
 
     console.log(`[Pending 1C] Проект создан в БД, готов к отправке в 1С. ID: ${newProject.id}`);
 
@@ -87,15 +99,12 @@ export const getProjects = async (req: any, res: Response) => {
       };
     }
 
-    // ВАЖНО: Сортировка происходит на уровне БД. 
-    // Поскольку мы обновляем updatedAt в sendMessage, 
-    // проект с 6-й страницы получит свежий Timestamp и вылетит на 1-ю страницу.
     const [projects, totalCount] = await Promise.all([
       prisma.project.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { updatedAt: 'desc' }, // Главный двигатель сортировки
+        orderBy: { updatedAt: 'desc' },
         include: {
           partner: { select: { id: true, name: true, companyName: true } },
           _count: {
@@ -110,17 +119,12 @@ export const getProjects = async (req: any, res: Response) => {
       prisma.project.count({ where })
     ]);
 
-    // Мапим данные для фронтенда
     const processedProjects = projects.map((p: any) => ({
       ...p,
       unreadCount: p._count.messages,
       hasUnread: p._count.messages > 0,
       _count: undefined
     }));
-
-    // УБИРАЕМ ручную сортировку .sort(), так как она ломает логику пагинации.
-    // Если на 1-й странице есть 10 проектов, отсортированных по updatedAt, 
-    // и среди них есть непрочитанные — они и так будут в самом верху благодаря БД.
 
     res.json({
       projects: processedProjects,
@@ -167,8 +171,19 @@ export const updateProject = async (req: any, res: Response) => {
         executionDate: executionDate ? new Date(executionDate) : null,
         dynamicData: otherData,
         updatedAt: new Date()
+      },
+      include: {
+        partner: { select: { id: true, name: true, companyName: true } }
       }
     });
+
+    const io = req.app.get('io');
+    if (io) {
+      // Все вкладки этого партнера получат обновлённый проект
+      io.to(`user_${req.user.id}`).emit('project_updated', updatedProject);
+      // Менеджеры тоже видят изменения
+      io.to('admin_room').emit('project_updated', updatedProject);
+    }
 
     res.json({ message: "Проект обновлен", project: updatedProject });
   } catch (error) {

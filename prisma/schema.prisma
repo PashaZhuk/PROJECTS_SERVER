@@ -43,6 +43,7 @@ model User {
 
   // 🔐 ПОЛЕ ДЛЯ КОНТРОЛЯ СЕССИЙ
   currentSessionId   String?   @db.VarChar(36) // UUID v4
+  isBlocked          Boolean   @default(false)
 
   // Связи
   projects           Project[] @relation("PartnerProjects")

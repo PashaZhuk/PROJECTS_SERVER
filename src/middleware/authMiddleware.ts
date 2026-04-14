@@ -18,7 +18,6 @@ export const authMiddleware = async (
 ) => {
   let token: string | undefined;
 
-  // Извлекаем токен из заголовков или кук
   if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
   } else if (req.cookies?.jwt) {
@@ -45,23 +44,29 @@ export const authMiddleware = async (
       return res.status(401).json({ error: "User no longer exists" });
     }
 
-    // 🔐 1. ПРОВЕРКА ВЫТЕСНЕНИЯ СЕССИИ (Single Device Login)
+    // 🚫 ПРОВЕРКА БЛОКИРОВКИ
+    if (user.isBlocked) {
+      return res.status(403).json({
+        error: "Ваш аккаунт заблокирован. Обратитесь к администратору.",
+        code: "USER_BLOCKED"
+      });
+    }
+
+    // 🔐 ПРОВЕРКА ВЫТЕСНЕНИЯ СЕССИИ
     if (decoded.sessionId && user.currentSessionId !== decoded.sessionId) {
-      console.log(`[Security] Session superseded for user ${userId}. Token session: ${decoded.sessionId}, DB session: ${user.currentSessionId}`);
-      
       return res.status(401).json({ 
         error: "Сессия завершена из-за входа с другого устройства",
         code: "SESSION_SUPERSEDED" 
       });
     }
 
-    // ⏳ 2. ЛОГИКА ТАЙМАУТА НЕАКТИВНОСТИ
+    // ⏳ ПРОВЕРКА ТАЙМАУТА НЕАКТИВНОСТИ
     const now = new Date();
     const lastSeen = new Date(user.lastSeen);
     const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
     
-    const LIMIT_USER = 30;      // 30 минут для партнеров
-    const LIMIT_OTHERS = 120;   // 2 часа для менеджеров и админов
+    const LIMIT_USER = 30;
+    const LIMIT_OTHERS = 120;
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 
     if (diffMinutes > limit) {
@@ -71,8 +76,7 @@ export const authMiddleware = async (
       });
     }
 
-    // 🔄 3. ОБНОВЛЕНИЕ АКТИВНОСТИ
-    // Используем await, чтобы гарантировать запись до перехода к следующему middleware
+    // 🔄 ОБНОВЛЕНИЕ АКТИВНОСТИ
     await prisma.user.update({
       where: { id: userId },
       data: { lastSeen: new Date() }

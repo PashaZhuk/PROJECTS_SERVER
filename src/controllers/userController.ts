@@ -6,10 +6,6 @@ interface AuthRequest extends Request {
     user?: any;
 }
 
-/**
- * ВНУТРЕННИЙ ХЕЛПЕР: Сбор статистики
- * Вынесен отдельно, чтобы его могли использовать и API-эндпоинт, и Socket.io
- */
 export const fetchStatsInternal = async () => {
     const activeThreshold = new Date(Date.now() - 5 * 60 * 1000);
 
@@ -17,16 +13,10 @@ export const fetchStatsInternal = async () => {
         prisma.user.count({ where: { role: 'USER' } }),
         prisma.user.count({ where: { role: 'MANAGER' } }),
         prisma.user.count({
-            where: {
-                role: 'USER',
-                lastSeen: { gte: activeThreshold }
-            }
+            where: { role: 'USER', lastSeen: { gte: activeThreshold } }
         }),
         prisma.user.count({
-            where: {
-                role: 'MANAGER',
-                lastSeen: { gte: activeThreshold }
-            }
+            where: { role: 'MANAGER', lastSeen: { gte: activeThreshold } }
         })
     ]);
 
@@ -34,43 +24,28 @@ export const fetchStatsInternal = async () => {
         totalUsers,
         totalManagers,
         onlineCount: onlineUsers + onlineManagers,
-        details: {
-            onlineUsers,
-            onlineManagers
-        }
+        details: { onlineUsers, onlineManagers }
     };
 };
 
-/**
- * ХЕЛПЕР: Рассылка статистики через Socket.io
- */
 export const emitStatsUpdate = async (io: any) => {
     if (!io) return;
     try {
         const stats = await fetchStatsInternal();
-        // Отправляем данные в комнату админов
         io.to('admin_room').emit('stats_updated', stats);
     } catch (error) {
         console.error('Socket Emit Stats Error:', error);
     }
 };
 
-// --- КОНТРОЛЛЕРЫ ---
-
 const getUsers = async (req: any, res: Response) => {
     try {
-        // 1. Получаем параметры из строки запроса
         const { page = 1, limit = 10, search = '', role = '' } = req.query;
-
-        // Расчеты для пагинации
         const take = Number(limit);
         const skip = (Number(page) - 1) * take;
 
-        // 2. Формируем условия фильтрации (WHERE)
         const where: any = {
-            // Если роль передана и она не 'ALL', фильтруем по ней
             ...(role && role !== 'ALL' && { role }),
-            // Если есть поисковый запрос
             ...(search && {
                 OR: [
                     { name: { contains: search, mode: 'insensitive' } },
@@ -81,7 +56,6 @@ const getUsers = async (req: any, res: Response) => {
             }),
         };
 
-        // 3. Выполняем запросы параллельно: сами данные и общее количество
         const [users, totalCount] = await Promise.all([
             prisma.user.findMany({
                 where,
@@ -94,28 +68,25 @@ const getUsers = async (req: any, res: Response) => {
                     unp: true,
                     createdAt: true,
                     lastSeen: true,
+                    isBlocked: true, // ← добавили
                 },
                 orderBy: { createdAt: 'desc' },
-                take: take,
-                skip: skip,
+                take,
+                skip,
             }),
             prisma.user.count({ where }),
         ]);
 
-        // 4. Отдаем ответ в формате, который теперь поймет фронтенд
         res.status(200).json({
             status: 'success',
-            users, // Сами данные
-            totalCount, // Общее кол-во (для пагинации)
-            totalPages: Math.ceil(totalCount / take), // Всего страниц
+            users,
+            totalCount,
+            totalPages: Math.ceil(totalCount / take),
             currentPage: Number(page)
         });
     } catch (error) {
         console.error('API Error:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Не удалось получить список пользователей',
-        });
+        res.status(500).json({ status: 'error', message: 'Не удалось получить список пользователей' });
     }
 };
 
@@ -128,22 +99,71 @@ const deleteUser = async (req: Request, res: Response) => {
         }
 
         const user = await prisma.user.findUnique({ where: { id: Number(id) } });
-        if (!user) {
-            return res.status(404).json({ error: "Пользователь не найден" });
-        }
+        if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
         await prisma.user.delete({ where: { id: Number(id) } });
-
-        // ОБНОВЛЕНИЕ СОКЕТОВ: Рассылаем статистику, так как кол-во пользователей изменилось
         emitStatsUpdate(req.app.get('io'));
 
-        res.status(200).json({
-            status: "success",
-            message: "Пользователь успешно удален"
-        });
+        res.status(200).json({ status: "success", message: "Пользователь успешно удален" });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: "Ошибка сервера при удалении" });
+    }
+};
+
+const toggleBlock = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const targetId = Number(id);
+
+        if (targetId === (req as any).user.id) {
+            return res.status(400).json({ error: "Вы не можете заблокировать себя" });
+        }
+
+        const user = await prisma.user.findUnique({ where: { id: targetId } });
+        if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+
+        if (user.role === 'ADMIN') {
+            return res.status(400).json({ error: "Нельзя заблокировать администратора" });
+        }
+
+        const newBlockedState = !user.isBlocked;
+
+        const updatedUser = await prisma.user.update({
+            where: { id: targetId },
+            data: {
+                isBlocked: newBlockedState,
+                // Если блокируем — сбрасываем сессию, чтобы пользователь немедленно вылетел
+                ...(newBlockedState && { currentSessionId: null })
+            }
+        });
+
+        const io = req.app.get('io');
+        if (io) {
+            if (newBlockedState) {
+                // Отправляем сигнал в персональную комнату — пользователь получит и увидит модалку
+                io.to(`user_${targetId}`).emit('user_blocked');
+            }
+            
+            // Обновляем список у админа через сокет
+            io.to('admin_room').emit('user:blocked_status_changed', {
+                userId: targetId,
+                isBlocked: newBlockedState
+            });
+
+            // --- ДОБАВЛЕНО: Обновляем статистику в реальном времени ---
+            // Импортируй emitStatsUpdate из контроллера, если он в другом файле
+            await emitStatsUpdate(io); 
+        }
+
+        res.status(200).json({
+            status: 'success',
+            message: newBlockedState ? 'Пользователь заблокирован' : 'Пользователь разблокирован',
+            isBlocked: newBlockedState
+        });
+    } catch (error) {
+        console.error('Toggle block error:', error);
+        res.status(500).json({ error: "Ошибка при изменении статуса блокировки" });
     }
 };
 
@@ -155,10 +175,7 @@ const changeDefaultPassword = async (req: AuthRequest, res: Response) => {
 
         await prisma.user.update({
             where: { id: req.user.id },
-            data: { 
-                password: hashedPassword, 
-                mustChangePassword: false 
-            }
+            data: { password: hashedPassword, mustChangePassword: false }
         });
 
         res.json({ status: "success" });
@@ -177,11 +194,9 @@ const getAdminStats = async (req: Request, res: Response) => {
     }
 };
 
-// Хелпер для уведомления админов о том, что статус пользователя изменился
 export const emitUserStatusUpdate = (io: any, userId: number, lastSeen: Date) => {
-  if (!io) return;
-  io.to('admin_room').emit('user_status_changed', { userId, lastSeen });
+    if (!io) return;
+    io.to('admin_room').emit('user_status_changed', { userId, lastSeen });
 };
 
-
-export { getUsers, deleteUser, changeDefaultPassword, getAdminStats };
+export { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock };
