@@ -10,43 +10,36 @@ import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import cookieParser from 'cookie-parser';
-import { fetchStatsInternal } from './controllers/userController.js';
+import { fetchStatsInternal, setIoInstance } from './controllers/userController.js';
 
-// Загрузка переменных окружения
 config();
-
-// Подключение к БД
 connectDB();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 const HOST = process.env.HOST || '0.0.0.0';
 
-// Парсинг списка разрешенных адресов из .env
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim())
   : ['http://localhost:5173'];
 
 console.log(`🛡️ Allowed Origins: ${allowedOrigins.join(', ')}`);
 
-// --- Rate Limiting ---
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 500, // лимит запросов
+  windowMs: 15 * 60 * 1000,
+  max: 500,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Слишком много запросов, попробуйте позже." }
 });
 
 const chatLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 минута
+  windowMs: 1 * 60 * 1000,
   max: 30,
   message: { error: "Вы отправляете сообщения слишком часто. Подождите минуту." }
 });
 
-// --- Server & Socket Setup ---
 const httpServer = createServer(app);
-
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
@@ -62,10 +55,9 @@ const io = new Server(httpServer, {
   }
 });
 
-// Передаем io в приложение, чтобы использовать в контроллерах
+setIoInstance(io);
 app.set('io', io);
 
-// --- Middleware ---
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
@@ -80,11 +72,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json({ limit: '10kb' })); 
+app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser());
 
-// --- Routes ---
 app.use('/api/', generalLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
@@ -95,32 +86,54 @@ app.use('/api/chat', chatLimiter, chatRoutes);
 io.on('connection', (socket) => {
   console.log(`🟢 New connection: ${socket.id}`);
 
-  // Комната для мгновенного разлогина
-  socket.on('join_self_room', (userId) => {
+  // 1. ИДЕНТИФИКАЦИЯ
+  socket.on('identify_user', async ({ userId, userRole }) => {
     if (userId) {
-      const roomName = `user_${userId}`;
-      socket.join(roomName);
-      console.log(`👤 Socket ${socket.id} joined private room: ${roomName}`);
+      socket.data.userId = userId;
+      socket.data.userRole = userRole;
+      
+      console.log(`👤 Socket ${socket.id} identified as User ${userId} (${userRole})`);
+      
+      // Входим в личную комнату
+      socket.join(`user_${userId}`);
+      
+      // Уведомляем админов, что юзер в сети
+      io.to('admin_room').emit('user:online', userId);
+
+      // Обновляем статистику для админов
+      const stats = await fetchStatsInternal();
+      io.to('admin_room').emit('stats_updated', stats);
     }
   });
 
-  socket.on('join_project', ({ projectId, userId, userName, userRole }) => {
-    const roomName = `project_${projectId}`;
-    socket.join(roomName);
-    
-    socket.data.userId = userId;
-    socket.data.userName = userName;
-    socket.data.userRole = userRole;
-    socket.data.projectId = projectId;
-    
-    console.log(`📁 Socket ${socket.id} (User: ${userId}, ${userName}, Role: ${userRole}) joined ${roomName}`);
-    
-    if (userRole === 'MANAGER') {
-      socket.to(roomName).emit('system_message', {
-        text: `Менеджер ${userName} присоединился к обсуждению`,
-        type: 'INFO',
-        createdAt: new Date()
-      });
+  // 🔥 2. ОБРАБОТКА НАМЕРЕННОГО ВЫХОДА (LOGOUT)
+  socket.on('user_logging_out', async () => {
+    const userId = socket.data.userId;
+    if (userId) {
+      console.log(`🚪 User ${userId} logged out intentionally`);
+      
+      // Сразу шлем статус "оффлайн" админам
+      io.to('admin_room').emit('user:offline', userId);
+      
+      // Покидаем комнаты
+      socket.leave(`user_${userId}`);
+      socket.leave('admin_room');
+      
+      // Стираем данные, чтобы событие disconnect не сработало повторно для этого юзера
+      delete socket.data.userId;
+      
+      // Пересчитываем статистику
+      const stats = await fetchStatsInternal();
+      io.to('admin_room').emit('stats_updated', stats);
+    }
+  });
+
+  socket.on('join_self_room', (userId) => {
+    if (userId) {
+      if (!socket.data.userId) {
+         socket.data.userId = userId; 
+      }
+      socket.join(`user_${userId}`);
     }
   });
 
@@ -138,13 +151,31 @@ io.on('connection', (socket) => {
     socket.leave('admin_room');
   });
 
+  // 3. ОБРАБОТКА ОТКЛЮЧЕНИЯ (ЗАКРЫТИЕ ВКЛАДКИ ИЛИ ПОТЕРЯ СЕТИ)
   socket.on('disconnect', (reason) => {
-    console.log(`🔴 User disconnected: ${socket.id}. Reason: ${reason}`);
+    const userId = socket.data.userId;
+    
+    if (userId) {
+      console.log(`🔴 Identified user left: ${userId}. Reason: ${reason}`);
+      
+      // Задержка на случай перезагрузки страницы (F5)
+      setTimeout(async () => {
+        // Проверяем, не остались ли у юзера другие открытые вкладки (другие сокеты с тем же userId)
+        const activeSockets = await io.fetchSockets();
+        const stillConnected = activeSockets.some(s => s.data.userId === userId);
+
+        if (!stillConnected) {
+          console.log(`📡 User ${userId} is now fully offline`);
+          
+          const stats = await fetchStatsInternal();
+          io.to('admin_room').emit('stats_updated', stats);
+          io.to('admin_room').emit('user:offline', userId);
+        }
+      }, 1500); // 1.5 секунды достаточно для F5
+    }
   });
 });
 
-// --- Start Server ---
 httpServer.listen(Number(PORT), HOST, () => {
   console.log(`🚀 Server running on http://${HOST}:${PORT}`);
-  console.log(`📡 Listening for connections from: ${allowedOrigins.join(', ')}`);
 });
