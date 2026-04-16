@@ -1,12 +1,30 @@
 import type { Response, Request } from 'express';
-import { prisma } from '../config/db.js'
-import bcrypt from 'bcrypt'
-import { generateToken } from '../utils/generateToken'
+import { prisma } from '../config/db.js';
+import bcrypt from 'bcrypt';
+import { generateToken } from '../utils/generateToken';
 import { emitStatsUpdate } from './userController';
+import { v4 as uuidv4 } from 'uuid'; // Для генерации токена
+import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from '../services/emailService'; // Импортируем сервис
 
 interface AuthRequest extends Request {
   user?: any;
 }
+
+// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРИВЕТСТВИЯ ---
+const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword: string) => {
+  try {
+    const loginUrl = process.env.CLIENT_URL || 'http://localhost:5173/login';
+    const html = generateWelcomeEmail(name, email, plainPassword, loginUrl);
+    await sendEmail({
+      to: email,
+      subject: 'Добро пожаловать в IPMATICA Hub!',
+      html: html
+    });
+  } catch (error) {
+    console.error('Failed to send welcome email:', error);
+    // Не прерываем регистрацию, если письмо не ушло, но логируем ошибку
+  }
+};
 
 const register = async (req: Request, res: Response) => {
   try {
@@ -67,6 +85,9 @@ const register = async (req: Request, res: Response) => {
       },
     });
 
+    // 🔥 ОТПРАВКА ПИСЬМА ПРИВЕТСТВИЯ
+    await sendWelcomeEmailToUser(user.email, user.name, password);
+
     emitStatsUpdate(req.app.get('io'));
 
     res.status(201).json({
@@ -108,18 +129,13 @@ const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    // 🔑 ГЕНЕРАЦИЯ НОВОЙ СЕССИИ
     const { token, sessionId } = generateToken(String(user.id), res);
 
-    // 🌐 СОКЕТ-ЛОГИКА: ВЫТЕСНЕНИЕ ПРЕДЫДУЩЕЙ СЕССИИ
     const io = req.app.get('io');
     if (io && user.currentSessionId) {
-      // Отправляем сигнал в персональную комнату пользователя
-      // Все вкладки, где этот пользователь залогинен, получат это событие
       io.to(`user_${user.id}`).emit('session_superseded');
     }
 
-    // 💾 СОХРАНЕНИЕ SESSION ID В БД
     await prisma.user.update({
       where: { id: user.id },
       data: { 
@@ -162,14 +178,13 @@ const logout = async (req: any, res: Response) => {
     const io = req.app.get('io');
 
     if (userId) {
-      // Ставим дату чуть в прошлом, чтобы в админке статус обновился корректно
       const oldDate = new Date(Date.now() - 10 * 60 * 1000);
       
       await prisma.user.update({
         where: { id: userId },
         data: { 
           lastSeen: oldDate,
-          currentSessionId: null // Очищаем сессию при ручном выходе
+          currentSessionId: null 
         }
       });
 
@@ -213,4 +228,96 @@ const getProfile = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export { register, login, logout, getProfile }
+// 🔥 НОВАЯ ФУНКЦИЯ: ЗАПРОС НА СБРОС ПАРОЛЯ
+const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    
+    const user = await prisma.user.findUnique({ where: { email } });
+    
+    // В целях безопасности всегда возвращаем успех, даже если email не найден
+    // Чтобы злоумышленник не мог проверить наличие email в базе
+    if (!user) {
+      return res.json({ status: "success", message: "Если такой пользователь существует, письмо отправлено." });
+    }
+
+    // Генерируем токен
+    const resetToken = uuidv4();
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 час
+
+    // Сохраняем в БД
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetPasswordToken: resetToken,
+        resetPasswordExpires: resetTokenExpiry
+      }
+    });
+
+    // Формируем ссылку
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+    const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
+
+    // Отправляем письмо
+    const html = generateResetPasswordEmail(resetLink);
+    await sendEmail({
+      to: user.email,
+      subject: 'Сброс пароля IPMATICA Hub',
+      html: html
+    });
+
+    res.json({ status: "success", message: "Письмо со ссылкой для сброса пароля отправлено." });
+
+  } catch (error) {
+    console.error("Forgot Password Error:", error);
+    res.status(500).json({ error: "Ошибка сервера при отправке письма" });
+  }
+};
+
+// 🔥 НОВАЯ ФУНКЦИЯ: УСТАНОВКА НОВОГО ПАРОЛЯ
+const resetPassword = async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: "Неверные данные" });
+    }
+
+    // Ищем пользователя по токену и проверяем срок действия
+    const user = await prisma.user.findFirst({
+      where: {
+        resetPasswordToken: token,
+        resetPasswordExpires: {
+          gte: new Date() // Токен должен быть еще действителен
+        }
+      }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: "Ссылка недействительна или срок её действия истек" });
+    }
+
+    // Хэшируем новый пароль
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // Обновляем пароль и очищаем поля токена
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        resetPasswordToken: null,
+        resetPasswordExpires: null,
+        mustChangePassword: false // Если пользователь сам сменил пароль, флаг можно снять
+      }
+    });
+
+    res.json({ status: "success", message: "Пароль успешно изменен" });
+
+  } catch (error) {
+    console.error("Reset Password Error:", error);
+    res.status(500).json({ error: "Ошибка сервера при смене пароля" });
+  }
+};
+
+export { register, login, logout, getProfile, forgotPassword, resetPassword };

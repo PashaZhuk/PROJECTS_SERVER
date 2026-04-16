@@ -11,6 +11,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  
 }
 
 enum Role {
@@ -40,6 +41,8 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   lastSeen           DateTime  @default(now())
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
 
   // 🔐 ПОЛЕ ДЛЯ КОНТРОЛЯ СЕССИЙ
   currentSessionId   String?   @db.VarChar(36) // UUID v4
