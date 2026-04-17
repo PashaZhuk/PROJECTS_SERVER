@@ -2,10 +2,8 @@ import type { Response, Request } from 'express';
 import { prisma } from '../config/db.js';
 import bcrypt from 'bcrypt';
 
-// Глобальная переменная для хранения экземпляра IO
 let ioInstance: any = null;
 
-// Функция для установки экземпляра IO из server.ts
 export const setIoInstance = (io: any) => { 
   ioInstance = io; 
 };
@@ -14,53 +12,30 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-// --- НОВАЯ ЛОГИКА ПОДСЧЕТА ОНЛАЙНА ЧЕРЕЗ СОКЕТЫ ---
 const getOnlineUsersFromSockets = () => {
   if (!ioInstance) return { onlineUsers: 0, onlineManagers: 0 };
-
   const uniqueUsers = new Set<number>();
   const uniqueManagers = new Set<number>();
-
   const sockets = ioInstance.sockets.sockets; 
   
   sockets.forEach((socket: any) => {
     const userId = socket.data?.userId;
     const userRole = socket.data?.userRole;
-    
     if (userId) {
-      // 1. Если это АДМИН — вообще не учитываем в счетчиках онлайна
-      if (userRole === 'ADMIN') {
-        return; 
-      }
-
-      // 2. Если это МЕНЕДЖЕР — только в список менеджеров
-      if (userRole === 'MANAGER') {
-        uniqueManagers.add(userId);
-      } 
-      // 3. Если это обычный ЮЗЕР (Партнер) — только в список пользователей
-      else if (userRole === 'USER') {
-        uniqueUsers.add(userId);
-      }
+      if (userRole === 'ADMIN') return;
+      if (userRole === 'MANAGER') uniqueManagers.add(userId);
+      else if (userRole === 'USER') uniqueUsers.add(userId);
     }
   });
-
-  return {
-    onlineUsers: uniqueUsers.size,
-    onlineManagers: uniqueManagers.size
-  };
+  return { onlineUsers: uniqueUsers.size, onlineManagers: uniqueManagers.size };
 };
-// -----------------------------------------------
 
 export const fetchStatsInternal = async () => {
-  // Считаем общее количество пользователей из БД
   const [totalUsers, totalManagers] = await Promise.all([
     prisma.user.count({ where: { role: 'USER' } }),
     prisma.user.count({ where: { role: 'MANAGER' } }),
   ]);
-
-  // Получаем онлайн-счетчик из памяти сокетов (мгновенно и точно)
   const { onlineUsers, onlineManagers } = getOnlineUsersFromSockets();
-
   return {
     totalUsers,
     totalManagers,
@@ -86,7 +61,7 @@ const getUsers = async (req: any, res: Response) => {
     const skip = (Number(page) - 1) * take;
 
     const where: any = {
-          role: { not: 'ADMIN' },
+      role: { not: 'ADMIN' },
       ...(role && role !== 'ALL' && { role }),
       ...(search && {
         OR: [
@@ -111,6 +86,12 @@ const getUsers = async (req: any, res: Response) => {
           createdAt: true,
           lastSeen: true,
           isBlocked: true,
+          // Блокировка входа
+          lockUntil: true,
+          failedLoginAttempts: true,
+          // 🔥 НОВОЕ: Блокировка 2FA
+          twoFactorLockUntil: true,
+          twoFactorAttempts: true,
         },
         orderBy: { createdAt: 'desc' },
         take,
@@ -119,7 +100,6 @@ const getUsers = async (req: any, res: Response) => {
       prisma.user.count({ where }),
     ]);
 
-    // ⚡ ВАЖНО: Подменяем isOnline на основе активных сокетов
     const onlineUserIds = new Set<number>();
     if (ioInstance) {
        ioInstance.sockets.sockets.forEach((s: any) => {
@@ -129,7 +109,9 @@ const getUsers = async (req: any, res: Response) => {
 
     const usersWithOnlineStatus = users.map(u => ({
       ...u,
-      isOnline: onlineUserIds.has(u.id) // Мгновенный статус
+      isOnline: onlineUserIds.has(u.id),
+      lockUntil: u.lockUntil ? u.lockUntil.toISOString() : null,
+      twoFactorLockUntil: u.twoFactorLockUntil ? u.twoFactorLockUntil.toISOString() : null,
     }));
 
     res.status(200).json({
@@ -151,7 +133,6 @@ const deleteUser = async (req: Request, res: Response) => {
     if (Number(id) === (req as any).user.id) {
       return res.status(400).json({ error: "Вы не можете удалить свою собственную учетную запись" });
     }
-
     const user = await prisma.user.findUnique({ where: { id: Number(id) } });
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
@@ -175,40 +156,74 @@ const toggleBlock = async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({ where: { id: targetId } });
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+    if (user.role === 'ADMIN') return res.status(400).json({ error: "Нельзя заблокировать администратора" });
 
-    if (user.role === 'ADMIN') {
-      return res.status(400).json({ error: "Нельзя заблокировать администратора" });
+    let newBlockedState = !user.isBlocked;
+    let message = '';
+    const now = new Date();
+
+    // 🔥 ПРИОРИТЕТ РАЗБЛОКИРОВКИ:
+    // 1. Снимаем блокировку входа (Пароль)
+    // 2. Снимаем блокировку 2FA (SMS)
+    // 3. Переключаем ручную блокировку
+
+    const isLoginLocked = user.lockUntil && user.lockUntil > now;
+    const is2FALocked = user.twoFactorLockUntil && user.twoFactorLockUntil > now;
+
+    if (isLoginLocked) {
+      await prisma.user.update({
+        where: { id: targetId },
+        data: {
+          lockUntil: null,
+          failedLoginAttempts: 0,
+          currentSessionId: null
+        }
+      });
+      message = 'Снята блокировка входа (брутфорс пароля)';
+      newBlockedState = false;
+    } else if (is2FALocked) {
+      await prisma.user.update({
+        where: { id: targetId },
+        data: {
+          twoFactorLockUntil: null,
+          twoFactorAttempts: 0,
+          currentSessionId: null
+        }
+      });
+      message = 'Снята блокировка 2FA (брутфорс SMS)';
+      newBlockedState = false;
+    } else {
+      // Ручная блокировка
+      await prisma.user.update({
+        where: { id: targetId },
+        data: {
+          isBlocked: newBlockedState,
+          ...(newBlockedState && { currentSessionId: null })
+        }
+      });
+      message = newBlockedState ? 'Пользователь заблокирован вручную' : 'Ручная блокировка снята';
     }
-
-    const newBlockedState = !user.isBlocked;
-
-    const updatedUser = await prisma.user.update({
-      where: { id: targetId },
-      data: {
-        isBlocked: newBlockedState,
-        // Если блокируем — сбрасываем сессию
-        ...(newBlockedState && { currentSessionId: null })
-      }
-    });
 
     const io = req.app.get('io');
     if (io) {
-      if (newBlockedState) {
-        io.to(`user_${targetId}`).emit('user_blocked');
+      if (isLoginLocked || is2FALocked) {
+         io.to(`user_${targetId}`).emit('user_unblocked_by_admin');
+      } else if (!isLoginLocked && !is2FALocked && newBlockedState) {
+         io.to(`user_${targetId}`).emit('user_blocked');
       }
       
       io.to('admin_room').emit('user:blocked_status_changed', {
         userId: targetId,
-        isBlocked: newBlockedState
+        isBlocked: newBlockedState,
+        wasSystemLock: isLoginLocked || is2FALocked
       });
 
-      // Обновляем статистику
       await emitStatsUpdate(io); 
     }
 
     res.status(200).json({
       status: 'success',
-      message: newBlockedState ? 'Пользователь заблокирован' : 'Пользователь разблокирован',
+      message,
       isBlocked: newBlockedState
     });
   } catch (error) {
@@ -226,7 +241,6 @@ const changeDefaultPassword = async (req: AuthRequest, res: Response) => {
       where: { id: req.user.id },
       data: { password: hashedPassword, mustChangePassword: false }
     });
-
     res.json({ status: "success" });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при смене пароля" });

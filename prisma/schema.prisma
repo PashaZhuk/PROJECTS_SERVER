@@ -49,6 +49,23 @@ model User {
   currentSessionId   String?   @db.VarChar(36) // UUID v4
   isBlocked          Boolean   @default(false)
 
+   // --- Поля для защиты от брутфорса входа ---
+  failedLoginAttempts Int      @default(0)
+  lockUntil           DateTime? 
+
+  // 🔥 НОВЫЕ ПОЛЯ ДЛЯ 2FA ---
+  // Флаг: успешно ли пройден 2FA в текущей сессии
+  twoFactorVerified   Boolean  @default(false)
+  
+  // Счетчик неудачных попыток ввода 2FA кода
+  twoFactorAttempts   Int      @default(0)
+  
+  // Время блокировки после 3 неудачных попыток 2FA
+  twoFactorLockUntil  DateTime?
+  
+  // Время последней отправки кода (для лимита 1 раз в 60 сек)
+  twoFactorCodeSentAt DateTime? 
+
   // Связи
   projects           Project[] @relation("PartnerProjects")
   processedProjects  Project[] @relation("ManagerAction")
