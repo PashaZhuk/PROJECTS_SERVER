@@ -28,11 +28,22 @@ const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword
 
 const register = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, role, unp, companyName } = req.body;
+    const { name, email, password, role, unp, companyName, phone } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: "Пожалуйста, заполните все обязательные поля" });
+    // 🔥 ИЗМЕНЕНИЕ 1: Гибкая валидация обязательных полей
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email и пароль обязательны" });
     }
+
+    // Проверка имени: обязательно для Менеджера, опционально для Партнера
+    if (role === 'MANAGER' && !name) {
+      return res.status(400).json({ error: "Для менеджера обязательно ФИО" });
+    }
+    
+    // Если имя не передано для партнера, используем название компании как имя (для совместимости) 
+    // или оставляем пустым, если база позволяет null. 
+    // Лучший вариант: если имени нет, берем компанию.
+    const finalName = name ? name.trim() : (companyName ? companyName.trim() : 'Партнер');
 
     const userExist = await prisma.user.findUnique({ where: { email } });
     if (userExist) {
@@ -43,6 +54,7 @@ const register = async (req: Request, res: Response) => {
       return res.status(403).json({ error: "Недостаточно прав для создания администратора" });
     }
 
+    // 🔥 ИЗМЕНЕНИЕ 2: Валидация данных партнера
     if (role === 'USER') {
       if (!unp || !companyName) {
         return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
@@ -75,10 +87,12 @@ const register = async (req: Request, res: Response) => {
 
     const user = await prisma.user.create({ 
       data: {
-        name: name.trim(),
+        // 🔥 ИЗМЕНЕНИЕ 3: Используем finalName
+        name: finalName, 
         email: email.toLowerCase().trim(),
         password: hashedPassword,
         role: role || 'USER',
+        phone: role === 'USER' ? phone : null, 
         unp: role === 'USER' ? unp.toString().trim() : null,
         companyName: role === 'USER' ? companyName.trim() : null,
         mustChangePassword: true
@@ -86,6 +100,7 @@ const register = async (req: Request, res: Response) => {
     });
 
     // 🔥 ОТПРАВКА ПИСЬМА ПРИВЕТСТВИЯ
+    // Внимание: если имени не было, в письме будет "Здравствуйте, ООО Ромашка!"
     await sendWelcomeEmailToUser(user.email, user.name, password);
 
     emitStatsUpdate(req.app.get('io'));
@@ -105,12 +120,57 @@ const register = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Registration Error:", error);
+    
+    // Обработка ошибок уникальности (P2002)
     if (error.code === 'P2002') {
-      const field = error.meta?.target;
-      return res.status(400).json({
-        error: `Данные в поле ${field} уже используются`
+      const meta = error.meta;
+      let targetFields: string[] = [];
+
+      // 1. Пытаемся извлечь поля из meta.target
+      if (meta) {
+        if (Array.isArray(meta.target)) {
+          targetFields = meta.target;
+        } else if (typeof meta.target === 'string') {
+          targetFields = [meta.target];
+        }
+      }
+
+      // Преобразуем массив полей в строку для надежного поиска
+      const targetString = targetFields.join(',').toLowerCase();
+      
+      // Также проверяем сообщение ошибки от драйвера (иногда там есть подсказки)
+      const errorMessage = error.message?.toLowerCase() || '';
+
+      // 🔥 ПРОВЕРКИ (используем includes для надежности)
+      
+      // Проверка телефона
+      if (targetFields.includes('phone') || targetString.includes('phone') || errorMessage.includes('phone')) {
+        return res.status(400).json({ 
+          error: "Этот номер телефона уже зарегистрирован в системе" 
+        });
+      }
+      
+      // Проверка Email
+      if (targetFields.includes('email') || targetString.includes('email') || errorMessage.includes('email')) {
+        return res.status(400).json({ 
+          error: "Пользователь с таким Email уже существует" 
+        });
+      }
+      
+      // Проверка УНП
+      if (targetFields.includes('unp') || targetString.includes('unp') || errorMessage.includes('unp')) {
+        return res.status(400).json({ 
+          error: "Партнер с таким УНП уже зарегистрирован" 
+        });
+      }
+
+      // Если ничего не подошло, выводим общую ошибку с деталями для отладки (в консоли)
+      console.warn("Неизвестное поле нарушения уникальности:", meta);
+      return res.status(400).json({ 
+        error: "Данные уже используются в системе" 
       });
     }
+
     res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 };

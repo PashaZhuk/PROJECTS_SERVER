@@ -43,6 +43,7 @@ model User {
   lastSeen           DateTime  @default(now())
   resetPasswordToken String?
   resetPasswordExpires DateTime?
+  phone               String?  @unique @db.VarChar(20) 
 
   // 🔐 ПОЛЕ ДЛЯ КОНТРОЛЯ СЕССИЙ
   currentSessionId   String?   @db.VarChar(36) // UUID v4

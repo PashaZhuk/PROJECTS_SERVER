@@ -34,7 +34,7 @@ interface SendMailOptions {
 export const sendEmail = async ({ to, subject, html }: SendMailOptions) => {
   try {
     const info = await transporter.sendMail({
-      from: `"IPMATICA Hub" <${process.env.SMTP_USER}>`, // Sender address
+      from: `"IPMATIКA Hub" <${process.env.SMTP_USER}>`, // Sender address
       to,
       subject,
       html,
