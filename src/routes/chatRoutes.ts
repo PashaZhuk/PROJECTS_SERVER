@@ -1,11 +1,12 @@
-import express from 'express'
 import { Router } from 'express';
-import { getProjectMessages, sendMessage, markAsRead} from '../../src/controllers/chatController';
+import { getProjectMessages, sendMessage, markAsRead } from '../controllers/chatController';
 import { authMiddleware } from '../middleware/authMiddleware';
+import { validate, sendMessageSchema } from '../utils/validationSchemas';
 
-const router =Router()
+const router = Router();
+
 router.get('/:projectId/messages', authMiddleware, getProjectMessages);
-router.post('/:projectId/messages', authMiddleware, sendMessage);
+router.post('/:projectId/messages', authMiddleware, validate(sendMessageSchema), sendMessage);
 router.patch('/:projectId/read', authMiddleware, markAsRead);
 
-export default router
+export default router;

@@ -2,23 +2,21 @@ import express from 'express';
 import { 
   register, login, logout, getProfile, 
   forgotPassword, resetPassword, 
-  send2FACode, verify2FACode // Импортируем новые функции
-} from '../../src/controllers/authController';
+  send2FACode, verify2FACode 
+} from '../controllers/authController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
+import { validate, loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, twoFASendSchema, twoFAVerifySchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 
-router.post('/register', authMiddleware, adminMiddleware, register);
-router.post('/login', login);
+router.post('/register', authMiddleware, adminMiddleware, validate(registerSchema), register);
+router.post('/login', validate(loginSchema), login);
 router.post('/logout', logout);
 router.get('/profile', authMiddleware, getProfile);
-
-// 2FA Routes (публичные, так как юзер еще не залогинен полноценно)
-router.post('/2fa/send', send2FACode);
-router.post('/2fa/verify', verify2FACode);
-
-router.post('/forgot-password', forgotPassword);
-router.post('/reset-password', resetPassword);
+router.post('/2fa/send', validate(twoFASendSchema), send2FACode);
+router.post('/2fa/verify', validate(twoFAVerifySchema), verify2FACode);
+router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
+router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 
 export default router;

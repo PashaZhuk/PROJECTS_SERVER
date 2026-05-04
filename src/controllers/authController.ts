@@ -10,11 +10,10 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-// Константы безопасности
 const MAX_2FA_ATTEMPTS = 3;
-const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 минут
-const CODE_RESEND_DELAY_MS = 60 * 1000; // 60 секунд
-const HARDCODED_2FA_CODE = '111111'; // Временный код
+const LOCK_DURATION_MS = 15 * 60 * 1000;
+const CODE_RESEND_DELAY_MS = 60 * 1000;
+const HARDCODED_2FA_CODE = '111111';
 
 const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword: string) => {
   try {
@@ -26,7 +25,6 @@ const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword
   }
 };
 
-// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ БЛОКИРОВКИ 2FA ---
 const check2FALock = (user: any) => {
   if (user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
     const timeLeft = Math.ceil((user.twoFactorLockUntil.getTime() - Date.now()) / 1000);
@@ -35,22 +33,16 @@ const check2FALock = (user: any) => {
   return { locked: false, timeLeft: 0 };
 };
 
-const register = async (req: Request, res: Response) => {
-  // ... (код регистрации оставляем без изменений, как у тебя было) ...
-  // Для краткости я не дублирую весь блок register, он у тебя уже правильный.
-  // Просто убедись, что импорты сверху есть.
+export const register = async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, unp, companyName, phone } = req.body;
-    if (!email || !password) return res.status(400).json({ error: "Email и пароль обязательны" });
-    if (role === 'MANAGER' && !name) return res.status(400).json({ error: "Для менеджера обязательно ФИО" });
-    
     const finalName = name ? name.trim() : (companyName ? companyName.trim() : 'Партнер');
+    
     const userExist = await prisma.user.findUnique({ where: { email } });
     if (userExist) return res.status(400).json({ error: "Пользователь с таким Email уже существует" });
     if (role === 'ADMIN') return res.status(403).json({ error: "Недостаточно прав для создания администратора" });
 
     if (role === 'USER') {
-      if (!unp || !companyName) return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
       const cleanUnp = unp.toString().trim();
       const cleanCompanyName = companyName.trim();
       const partnerConflict = await prisma.user.findFirst({
@@ -71,7 +63,7 @@ const register = async (req: Request, res: Response) => {
         role: role || 'USER', phone: role === 'USER' ? phone : null,
         unp: role === 'USER' ? unp.toString().trim() : null,
         companyName: role === 'USER' ? companyName.trim() : null,
-        mustChangePassword: true, twoFactorVerified: false // Сброс 2FA флага
+        mustChangePassword: true, twoFactorVerified: false
       },
     });
     await sendWelcomeEmailToUser(user.email, user.name, password);
@@ -97,19 +89,17 @@ const register = async (req: Request, res: Response) => {
   }
 };
 
-const login = async (req: Request, res: Response) => {
+export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
 
-    // 1. Проверка блокировки входа (Brute-force защита) - ОСТАЕТСЯ ДЛЯ ВСЕХ
     if (user && user.lockUntil && user.lockUntil > new Date()) {
       const timeLeft = Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000);
       return res.status(429).json({ error: `Аккаунт заблокирован. Попробуйте через ${timeLeft} сек.`, timeLeft });
     }
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      // Логика подсчета попыток (для всех ролей)
       if (user) {
         const newAttempts = (user.failedLoginAttempts || 0) + 1;
         if (newAttempts >= 5) {
@@ -124,97 +114,63 @@ const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Неверный email или пароль" });
     }
 
-    // Успешный пароль -> сброс счетчиков входа
     if (user.failedLoginAttempts > 0 || user.lockUntil) {
       await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockUntil: null } });
     }
 
-    // 🔥 ИЗМЕНЕНИЕ: Проверка роли для 2FA
-    // 2FA требуется ТОЛЬКО для роли USER (Партнер)
     const requires2FA = user.role === 'USER';
 
     if (requires2FA) {
-      // Если пользователь уже прошел 2FA в этой сессии (редко, но бывает)
       if (user.twoFactorVerified) {
          const { token, sessionId } = generateToken(String(user.id), res);
          await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId, lastSeen: new Date() } });
          const io = req.app.get('io');
          emitStatsUpdate(io);
          if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-         
-         return res.status(200).json({ 
-           status: "success", 
-           data: { user: { ...user, password: undefined }, token, requires2FA: false } 
-         });
+         return res.status(200).json({ status: "success", data: { user: { ...user, password: undefined }, token, requires2FA: false } });
       }
-
-      // Требуется ввод кода
       res.status(200).json({
         status: "2FA_REQUIRED",
         message: "Требуется подтверждение входа (SMS)",
-        data: {
-          userId: user.id,
-          email: user.email,
-          requires2FA: true
-        }
+        data: { userId: user.id, email: user.email, requires2FA: true }
       });
     } else {
-      // 🔥 ДЛЯ МЕНЕДЖЕРОВ И АДМИНОВ: Вход сразу без 2FA
       const { token, sessionId } = generateToken(String(user.id), res);
-
       const io = req.app.get('io');
       if (io && user.currentSessionId) {
         io.to(`user_${user.id}`).emit('session_superseded');
       }
-
       await prisma.user.update({
         where: { id: user.id },
-        data: { 
-          currentSessionId: sessionId,
-          lastSeen: new Date(),
-          twoFactorVerified: false // Сбрасываем, если вдруг было true
-        }
+        data: { currentSessionId: sessionId, lastSeen: new Date(), twoFactorVerified: false }
       });
-
       emitStatsUpdate(io);
       if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-
       res.status(200).json({
         status: "success",
         data: {
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            mustChangePassword: user.mustChangePassword
-          },
+          user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
           token
         }
       });
     }
-
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ error: "Ошибка сервера при входе" });
   }
 };
 
-// 🔥 НОВЫЙ МЕТОД: ОТПРАВКА КОДА (Имитация)
-const send2FACode = async (req: Request, res: Response) => {
+export const send2FACode = async (req: Request, res: Response) => {
   try {
     const { userId } = req.body;
     const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
-
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
-    // Проверка блокировки 2FA
     const lockStatus = check2FALock(user);
     if (lockStatus.locked) {
       return res.status(429).json({ error: "Слишком много неудачных попыток. Попробуйте позже.", timeLeft: lockStatus.timeLeft });
     }
 
-    // Проверка задержки отправки (60 сек)
     if (user.twoFactorCodeSentAt) {
       const timePassed = Date.now() - user.twoFactorCodeSentAt.getTime();
       if (timePassed < CODE_RESEND_DELAY_MS) {
@@ -223,16 +179,8 @@ const send2FACode = async (req: Request, res: Response) => {
       }
     }
 
-    // Обновляем время отправки
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { twoFactorCodeSentAt: new Date() }
-    });
-
-    // ЗДЕСЬ БУДЕТ ЛОГИКА ОТПРАВКИ SMS/EMAIL
-    // Сейчас просто логируем код
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorCodeSentAt: new Date() } });
     console.log(`🔐 2FA CODE for ${user.email}: ${HARDCODED_2FA_CODE}`);
-
     res.json({ status: "success", message: "Код отправлен (см. консоль сервера)", debugCode: HARDCODED_2FA_CODE });
   } catch (error) {
     console.error("Send 2FA Code Error:", error);
@@ -240,80 +188,44 @@ const send2FACode = async (req: Request, res: Response) => {
   }
 };
 
-// 🔥 НОВЫЙ МЕТОД: ПРОВЕРКА КОДА
-const verify2FACode = async (req: Request, res: Response) => {
+export const verify2FACode = async (req: Request, res: Response) => {
   try {
     const { userId, code } = req.body;
     const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
-
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
-    // Проверка блокировки
     const lockStatus = check2FALock(user);
     if (lockStatus.locked) {
       return res.status(429).json({ error: "Аккаунт заблокирован после неудачных попыток.", timeLeft: lockStatus.timeLeft });
     }
 
-    // Проверка кода
     if (code !== HARDCODED_2FA_CODE) {
       const newAttempts = (user.twoFactorAttempts || 0) + 1;
-      
       if (newAttempts >= MAX_2FA_ATTEMPTS) {
-        // Блокируем
         const lockTime = new Date(Date.now() + LOCK_DURATION_MS);
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime }
-        });
+        await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime } });
         return res.status(429).json({ error: "Превышено количество попыток. Аккаунт заблокирован на 15 мин.", timeLeft: 900 });
       }
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { twoFactorAttempts: newAttempts }
-      });
-
+      await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts } });
       const attemptsLeft = MAX_2FA_ATTEMPTS - newAttempts;
       return res.status(401).json({ error: "Неверный код", attemptsLeft });
     }
 
-    // ✅ УСПЕХ
-    // Сбрасываем попытки, ставим флаг verified, выдаем ТОКЕН
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() }
-    });
-
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() } });
     const { token, sessionId } = generateToken(String(user.id), res);
-    
-    // Обновляем сессию
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { currentSessionId: sessionId }
-    });
-    
+    await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId } });
     const io = req.app.get('io');
     emitStatsUpdate(io);
     if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-
-    res.json({
-      status: "success",
-      message: "2FA успешно пройдена",
-      data: {
-        user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
-        token
-      }
-    });
-
+    res.json({ status: "success", message: "2FA успешно пройдена", data: { user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token } });
   } catch (error) {
     console.error("Verify 2FA Error:", error);
     res.status(500).json({ error: "Ошибка проверки кода" });
   }
 };
 
-const logout = async (req: any, res: Response) => {
-   // Твой код logout
-   try {
+export const logout = async (req: any, res: Response) => {
+  try {
     const userId = req.user?.id;
     const io = req.app.get('io');
     if (userId) {
@@ -329,7 +241,7 @@ const logout = async (req: any, res: Response) => {
   }
 };
 
-const getProfile = async (req: AuthRequest, res: Response) => {
+export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     const user = req.user;
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -341,8 +253,7 @@ const getProfile = async (req: AuthRequest, res: Response) => {
   }
 };
 
-const forgotPassword = async (req: Request, res: Response) => {
-  // Твой код forgotPassword
+export const forgotPassword = async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
@@ -361,11 +272,9 @@ const forgotPassword = async (req: Request, res: Response) => {
   }
 };
 
-const resetPassword = async (req: Request, res: Response) => {
-  // Твой код resetPassword
+export const resetPassword = async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
-    if (!token || !newPassword) return res.status(400).json({ error: "Неверные данные" });
     const user = await prisma.user.findFirst({ where: { resetPasswordToken: token, resetPasswordExpires: { gte: new Date() } } });
     if (!user) return res.status(400).json({ error: "Ссылка недействительна или срок её действия истек" });
     const salt = await bcrypt.genSalt(10);
@@ -377,5 +286,3 @@ const resetPassword = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Ошибка сервера при смене пароля" });
   }
 };
-
-export { register, login, logout, getProfile, forgotPassword, resetPassword, send2FACode, verify2FACode };
