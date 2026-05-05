@@ -2,7 +2,7 @@ import type { Response, Request } from 'express';
 import { prisma } from '../config/db.js';
 import bcrypt from 'bcrypt';
 import { generateToken } from '../utils/generateToken';
-import { emitStatsUpdate } from './userController';
+import { emitStatsUpdate, emitUserLockStatus } from './userController';
 import { v4 as uuidv4 } from 'uuid';
 import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from '../services/emailService';
 
@@ -96,18 +96,26 @@ export const login = async (req: Request, res: Response) => {
 
     if (user && user.lockUntil && user.lockUntil > new Date()) {
       const timeLeft = Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000);
-      return res.status(429).json({ error: `Аккаунт заблокирован. Попробуйте через ${timeLeft} сек.`, timeLeft });
+      return res.status(429).json({ error: `Аккаунт заблокирован. Попробуйте через ${timeLeft} сек.`, timeLeft, lockType: 'PASSWORD' });
+    }
+
+    if (user && user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
+      const timeLeft = Math.ceil((user.twoFactorLockUntil.getTime() - Date.now()) / 1000);
+      return res.status(429).json({ error: "Аккаунт заблокирован из-за превышения попыток ввода SMS-кода. Попробуйте позже.", timeLeft, lockType: '2FA' });
     }
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
       if (user) {
         const newAttempts = (user.failedLoginAttempts || 0) + 1;
+        const io = req.app.get('io');
         if (newAttempts >= 5) {
           const lockTime = new Date(Date.now() + 15 * 60 * 1000);
           await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: newAttempts, lockUntil: lockTime } });
-          return res.status(429).json({ error: 'Превышено количество попыток входа. Аккаунт заблокирован на 15 мин.', timeLeft: 900 });
+          emitUserLockStatus(io, user.id, { lockUntil: lockTime, failedLoginAttempts: newAttempts });
+          return res.status(429).json({ error: 'Превышено количество попыток входа. Аккаунт заблокирован на 15 мин.', timeLeft: 900, lockType: 'PASSWORD' });
         }
         await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: newAttempts } });
+        emitUserLockStatus(io, user.id, { failedLoginAttempts: newAttempts });
         const attemptsLeft = 5 - newAttempts;
         return res.status(401).json({ error: "Неверный email или пароль", attemptsLeft });
       }
@@ -115,20 +123,14 @@ export const login = async (req: Request, res: Response) => {
     }
 
     if (user.failedLoginAttempts > 0 || user.lockUntil) {
+      const io = req.app.get('io');
       await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockUntil: null } });
+      emitUserLockStatus(io, user.id, { lockUntil: null, failedLoginAttempts: 0 });
     }
 
     const requires2FA = user.role === 'USER';
 
     if (requires2FA) {
-      if (user.twoFactorVerified) {
-         const { token, sessionId } = generateToken(String(user.id), res);
-         await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId, lastSeen: new Date() } });
-         const io = req.app.get('io');
-         emitStatsUpdate(io);
-         if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-         return res.status(200).json({ status: "success", data: { user: { ...user, password: undefined }, token, requires2FA: false } });
-      }
       res.status(200).json({
         status: "2FA_REQUIRED",
         message: "Требуется подтверждение входа (SMS)",
@@ -137,7 +139,7 @@ export const login = async (req: Request, res: Response) => {
     } else {
       const { token, sessionId } = generateToken(String(user.id), res);
       const io = req.app.get('io');
-      if (io && user.currentSessionId) {
+      if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
         io.to(`user_${user.id}`).emit('session_superseded');
       }
       await prisma.user.update({
@@ -145,7 +147,7 @@ export const login = async (req: Request, res: Response) => {
         data: { currentSessionId: sessionId, lastSeen: new Date(), twoFactorVerified: false }
       });
       emitStatsUpdate(io);
-      if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
+      if (io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
       res.status(200).json({
         status: "success",
         data: {
@@ -201,23 +203,47 @@ export const verify2FACode = async (req: Request, res: Response) => {
 
     if (code !== HARDCODED_2FA_CODE) {
       const newAttempts = (user.twoFactorAttempts || 0) + 1;
+      const io = req.app.get('io');
       if (newAttempts >= MAX_2FA_ATTEMPTS) {
         const lockTime = new Date(Date.now() + LOCK_DURATION_MS);
-        await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime } });
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime }
+        });
+        emitUserLockStatus(io, user.id, { twoFactorLockUntil: lockTime, twoFactorAttempts: newAttempts });
         return res.status(429).json({ error: "Превышено количество попыток. Аккаунт заблокирован на 15 мин.", timeLeft: 900 });
       }
-      await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts } });
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { twoFactorAttempts: newAttempts }
+      });
+      emitUserLockStatus(io, user.id, { twoFactorAttempts: newAttempts });
       const attemptsLeft = MAX_2FA_ATTEMPTS - newAttempts;
       return res.status(401).json({ error: "Неверный код", attemptsLeft });
     }
 
-    await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() } });
-    const { token, sessionId } = generateToken(String(user.id), res);
-    await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId } });
+    // Успешная верификация
     const io = req.app.get('io');
+    const { token, sessionId } = generateToken(String(user.id), res);
+    if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
+      io.to(`user_${user.id}`).emit('session_superseded');
+    }
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { currentSessionId: sessionId, twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() }
+    });
+    emitUserLockStatus(io, user.id, { twoFactorLockUntil: null, twoFactorAttempts: 0 });
     emitStatsUpdate(io);
-    if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-    res.json({ status: "success", message: "2FA успешно пройдена", data: { user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token } });
+    if (io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
+
+    res.json({
+      status: "success",
+      message: "2FA успешно пройдена",
+      data: {
+        user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
+        token
+      }
+    });
   } catch (error) {
     console.error("Verify 2FA Error:", error);
     res.status(500).json({ error: "Ошибка проверки кода" });
@@ -230,7 +256,7 @@ export const logout = async (req: any, res: Response) => {
     const io = req.app.get('io');
     if (userId) {
       const oldDate = new Date(Date.now() - 10 * 60 * 1000);
-      await prisma.user.update({ where: { id: userId }, data: { lastSeen: oldDate, currentSessionId: null } });
+      await prisma.user.update({ where: { id: userId }, data: { lastSeen: oldDate, currentSessionId: null, twoFactorVerified: false } });
       if (io) { io.to('admin_room').emit('user_status_changed', { userId, lastSeen: oldDate }); emitStatsUpdate(io); }
     }
     res.clearCookie('jwt', { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", path: "/" });

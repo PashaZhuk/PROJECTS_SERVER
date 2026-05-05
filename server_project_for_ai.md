@@ -1,8 +1,8 @@
-# 📦 Экспорт проекта: PROJECTS_SERVER
+# 📦 Экспорт проекта: server
 
 ## 🌳 Структура проекта
 ```
-📁 F:\Sandbox\PROJECTS_SERVER/
+📁 D:\2025\PROJECTS claude version\server/
   📄 README.md
   📄 docker-compose.yml
   📄 export_for_ai.py
@@ -18,6 +18,7 @@
       📄 commonInputTypes.ts
       📄 enums.ts
       📄 models.ts
+      📄 query_engine-windows.dll.node
       📁 internal/
         📄 class.ts
         📄 prismaNamespace.ts
@@ -56,6 +57,7 @@
       📄 adminMiddleware.ts
       📄 authMiddleware.ts
       📄 managerMiddleware.ts
+      📄 validate.ts
     📁 routes/
       📄 authRoutes.ts
       📄 chatRoutes.ts
@@ -66,6 +68,7 @@
     📁 utils/
       📄 generateToken.ts
       📄 socketHelpers.ts
+      📄 validationSchemas.ts
 ```
 
 ## 📝 Содержимое файлов
@@ -158,7 +161,8 @@ volumes:
     "nodemailer": "^8.0.5",
     "pg": "^8.16.3",
     "socket.io": "^4.8.3",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "zod": "^3.24.2"
   }
 }
 ```
@@ -8416,12 +8420,14 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { config } from 'dotenv';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
 import { connectDB } from './config/db.js';
+import { prisma } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
-import cookieParser from 'cookie-parser';
 import { fetchStatsInternal, setIoInstance } from './controllers/userController.js';
 
 config();
@@ -8470,6 +8476,66 @@ const io = new Server(httpServer, {
 setIoInstance(io);
 app.set('io', io);
 
+// --- Middleware авторизации сокетов (проверка JWT из cookies) ---
+io.use(async (socket, next) => {
+  try {
+    const cookieHeader = socket.handshake.headers.cookie;
+    if (!cookieHeader) {
+      console.log(`[Socket Auth] No cookies, rejecting ${socket.id}`);
+      return next(new Error('Authentication error: no cookies'));
+    }
+
+    // Парсим cookies вручную
+    const cookies: Record<string, string> = {};
+    cookieHeader.split(';').forEach(cookie => {
+      const [name, value] = cookie.trim().split('=');
+      if (name && value) cookies[name] = value;
+    });
+
+    const token = cookies['jwt'];
+    if (!token) {
+      console.log(`[Socket Auth] No JWT token, rejecting ${socket.id}`);
+      return next(new Error('Authentication error: no token'));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string; sessionId: string };
+    const userId = Number(decoded.id);
+    if (isNaN(userId)) {
+      return next(new Error('Invalid user ID in token'));
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, isBlocked: true, currentSessionId: true, name: true }
+    });
+
+    if (!user) {
+      return next(new Error('User not found'));
+    }
+
+    if (user.isBlocked) {
+      return next(new Error('User is blocked'));
+    }
+
+    // Проверка сессии (опционально, но рекомендуется)
+    if (user.currentSessionId && user.currentSessionId !== decoded.sessionId) {
+      return next(new Error('Session superseded'));
+    }
+
+    socket.data.user = {
+      id: user.id,
+      role: user.role,
+      name: user.name
+    };
+    console.log(`[Socket Auth] Authorized socket ${socket.id} as ${user.name} (${user.role})`);
+    next();
+  } catch (err: any) {
+    console.error(`[Socket Auth] Error: ${err.message}`);
+    next(new Error('Authentication error'));
+  }
+});
+
+// --- Express middleware ---
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
@@ -8494,97 +8560,67 @@ app.use('/api/user', userRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/chat', chatLimiter, chatRoutes);
 
-// --- SOCKET.IO LOGIC ---
+// --- Socket.IO event handlers ---
 io.on('connection', (socket) => {
-  console.log(`🟢 New connection: ${socket.id}`);
+  const user = socket.data.user;
+  if (!user) {
+    console.log(`🔴 Unauthorized socket ${socket.id} disconnected`);
+    socket.disconnect();
+    return;
+  }
 
-  // 1. ИДЕНТИФИКАЦИЯ
-  socket.on('identify_user', async ({ userId, userRole }) => {
-    if (userId) {
-      socket.data.userId = userId;
-      socket.data.userRole = userRole;
-      
-      console.log(`👤 Socket ${socket.id} identified as User ${userId} (${userRole})`);
-      
-      // Входим в личную комнату
-      socket.join(`user_${userId}`);
-      
-      // Уведомляем админов, что юзер в сети
-      io.to('admin_room').emit('user:online', userId);
+  console.log(`🟢 New connection: ${socket.id} (user ${user.id}, ${user.role})`);
 
-      // Обновляем статистику для админов
-      const stats = await fetchStatsInternal();
-      io.to('admin_room').emit('stats_updated', stats);
-    }
-  });
+  // Присоединение к личной комнате пользователя (для уведомлений)
+  socket.join(`user_${user.id}`);
 
-  // 🔥 2. ОБРАБОТКА НАМЕРЕННОГО ВЫХОДА (LOGOUT)
-  socket.on('user_logging_out', async () => {
-    const userId = socket.data.userId;
-    if (userId) {
-      console.log(`🚪 User ${userId} logged out intentionally`);
-      
-      // Сразу шлем статус "оффлайн" админам
-      io.to('admin_room').emit('user:offline', userId);
-      
-      // Покидаем комнаты
-      socket.leave(`user_${userId}`);
-      socket.leave('admin_room');
-      
-      // Стираем данные, чтобы событие disconnect не сработало повторно для этого юзера
-      delete socket.data.userId;
-      
-      // Пересчитываем статистику
-      const stats = await fetchStatsInternal();
-      io.to('admin_room').emit('stats_updated', stats);
-    }
-  });
-
-  socket.on('join_self_room', (userId) => {
-    if (userId) {
-      if (!socket.data.userId) {
-         socket.data.userId = userId; 
-      }
-      socket.join(`user_${userId}`);
-    }
-  });
-
-  socket.on('subscribe_admin_stats', async () => {
+  // Подписка админов на статистику
+  if (user.role === 'ADMIN' || user.role === 'MANAGER') {
     socket.join('admin_room');
-    try {
-      const initialStats = await fetchStatsInternal();
-      socket.emit('stats_updated', initialStats);
-    } catch (err) {
-      console.error("❌ Error sending initial stats:", err);
-    }
+    // Отправляем текущую статистику сразу
+    fetchStatsInternal().then(stats => {
+      socket.emit('stats_updated', stats);
+    }).catch(err => console.error('Stats error:', err));
+  }
+
+  // Обработка выхода пользователя (logout)
+  socket.on('user_logging_out', async () => {
+    console.log(`🚪 User ${user.id} logged out intentionally`);
+    socket.leave(`user_${user.id}`);
+    socket.leave('admin_room');
+    // Пересчитать статистику и разослать админам
+    const stats = await fetchStatsInternal();
+    io.to('admin_room').emit('stats_updated', stats);
+    io.to('admin_room').emit('user:offline', user.id);
   });
 
+  // Присоединение к комнате проекта (для чата)
+  socket.on('join_project', ({ projectId }) => {
+    if (!projectId) return;
+    const room = `project_${projectId}`;
+    socket.join(room);
+    console.log(`📢 [Socket] ${user.name || user.id} (${user.role}) joined room: ${room}`);
+  });
+
+  // Отписка от статистики (если нужно)
   socket.on('unsubscribe_admin_stats', () => {
     socket.leave('admin_room');
   });
 
-  // 3. ОБРАБОТКА ОТКЛЮЧЕНИЯ (ЗАКРЫТИЕ ВКЛАДКИ ИЛИ ПОТЕРЯ СЕТИ)
-  socket.on('disconnect', (reason) => {
-    const userId = socket.data.userId;
-    
-    if (userId) {
-      console.log(`🔴 Identified user left: ${userId}. Reason: ${reason}`);
-      
-      // Задержка на случай перезагрузки страницы (F5)
-      setTimeout(async () => {
-        // Проверяем, не остались ли у юзера другие открытые вкладки (другие сокеты с тем же userId)
-        const activeSockets = await io.fetchSockets();
-        const stillConnected = activeSockets.some(s => s.data.userId === userId);
-
-        if (!stillConnected) {
-          console.log(`📡 User ${userId} is now fully offline`);
-          
-          const stats = await fetchStatsInternal();
-          io.to('admin_room').emit('stats_updated', stats);
-          io.to('admin_room').emit('user:offline', userId);
-        }
-      }, 1500); // 1.5 секунды достаточно для F5
-    }
+  // Обработка отключения (закрытие вкладки)
+  socket.on('disconnect', async (reason) => {
+    console.log(`🔴 Disconnected: ${socket.id}, user ${user.id}, reason: ${reason}`);
+    // Задержка, чтобы не сработало при перезагрузке страницы
+    setTimeout(async () => {
+      const activeSockets = await io.fetchSockets();
+      const stillConnected = activeSockets.some(s => s.data.user?.id === user.id);
+      if (!stillConnected) {
+        console.log(`📡 User ${user.id} is now fully offline`);
+        const stats = await fetchStatsInternal();
+        io.to('admin_room').emit('stats_updated', stats);
+        io.to('admin_room').emit('user:offline', user.id);
+      }
+    }, 1500);
   });
 });
 
@@ -8642,11 +8678,10 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-// Константы безопасности
 const MAX_2FA_ATTEMPTS = 3;
-const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 минут
-const CODE_RESEND_DELAY_MS = 60 * 1000; // 60 секунд
-const HARDCODED_2FA_CODE = '111111'; // Временный код
+const LOCK_DURATION_MS = 15 * 60 * 1000;
+const CODE_RESEND_DELAY_MS = 60 * 1000;
+const HARDCODED_2FA_CODE = '111111';
 
 const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword: string) => {
   try {
@@ -8658,7 +8693,6 @@ const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword
   }
 };
 
-// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ПРОВЕРКИ БЛОКИРОВКИ 2FA ---
 const check2FALock = (user: any) => {
   if (user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
     const timeLeft = Math.ceil((user.twoFactorLockUntil.getTime() - Date.now()) / 1000);
@@ -8667,22 +8701,16 @@ const check2FALock = (user: any) => {
   return { locked: false, timeLeft: 0 };
 };
 
-const register = async (req: Request, res: Response) => {
-  // ... (код регистрации оставляем без изменений, как у тебя было) ...
-  // Для краткости я не дублирую весь блок register, он у тебя уже правильный.
-  // Просто убедись, что импорты сверху есть.
+export const register = async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, unp, companyName, phone } = req.body;
-    if (!email || !password) return res.status(400).json({ error: "Email и пароль обязательны" });
-    if (role === 'MANAGER' && !name) return res.status(400).json({ error: "Для менеджера обязательно ФИО" });
-    
     const finalName = name ? name.trim() : (companyName ? companyName.trim() : 'Партнер');
+    
     const userExist = await prisma.user.findUnique({ where: { email } });
     if (userExist) return res.status(400).json({ error: "Пользователь с таким Email уже существует" });
     if (role === 'ADMIN') return res.status(403).json({ error: "Недостаточно прав для создания администратора" });
 
     if (role === 'USER') {
-      if (!unp || !companyName) return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
       const cleanUnp = unp.toString().trim();
       const cleanCompanyName = companyName.trim();
       const partnerConflict = await prisma.user.findFirst({
@@ -8703,7 +8731,7 @@ const register = async (req: Request, res: Response) => {
         role: role || 'USER', phone: role === 'USER' ? phone : null,
         unp: role === 'USER' ? unp.toString().trim() : null,
         companyName: role === 'USER' ? companyName.trim() : null,
-        mustChangePassword: true, twoFactorVerified: false // Сброс 2FA флага
+        mustChangePassword: true, twoFactorVerified: false
       },
     });
     await sendWelcomeEmailToUser(user.email, user.name, password);
@@ -8729,19 +8757,17 @@ const register = async (req: Request, res: Response) => {
   }
 };
 
-const login = async (req: Request, res: Response) => {
+export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
 
-    // 1. Проверка блокировки входа (Brute-force защита) - ОСТАЕТСЯ ДЛЯ ВСЕХ
     if (user && user.lockUntil && user.lockUntil > new Date()) {
       const timeLeft = Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000);
       return res.status(429).json({ error: `Аккаунт заблокирован. Попробуйте через ${timeLeft} сек.`, timeLeft });
     }
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      // Логика подсчета попыток (для всех ролей)
       if (user) {
         const newAttempts = (user.failedLoginAttempts || 0) + 1;
         if (newAttempts >= 5) {
@@ -8756,97 +8782,63 @@ const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Неверный email или пароль" });
     }
 
-    // Успешный пароль -> сброс счетчиков входа
     if (user.failedLoginAttempts > 0 || user.lockUntil) {
       await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockUntil: null } });
     }
 
-    // 🔥 ИЗМЕНЕНИЕ: Проверка роли для 2FA
-    // 2FA требуется ТОЛЬКО для роли USER (Партнер)
     const requires2FA = user.role === 'USER';
 
     if (requires2FA) {
-      // Если пользователь уже прошел 2FA в этой сессии (редко, но бывает)
       if (user.twoFactorVerified) {
          const { token, sessionId } = generateToken(String(user.id), res);
          await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId, lastSeen: new Date() } });
          const io = req.app.get('io');
          emitStatsUpdate(io);
          if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-         
-         return res.status(200).json({ 
-           status: "success", 
-           data: { user: { ...user, password: undefined }, token, requires2FA: false } 
-         });
+         return res.status(200).json({ status: "success", data: { user: { ...user, password: undefined }, token, requires2FA: false } });
       }
-
-      // Требуется ввод кода
       res.status(200).json({
         status: "2FA_REQUIRED",
         message: "Требуется подтверждение входа (SMS)",
-        data: {
-          userId: user.id,
-          email: user.email,
-          requires2FA: true
-        }
+        data: { userId: user.id, email: user.email, requires2FA: true }
       });
     } else {
-      // 🔥 ДЛЯ МЕНЕДЖЕРОВ И АДМИНОВ: Вход сразу без 2FA
       const { token, sessionId } = generateToken(String(user.id), res);
-
       const io = req.app.get('io');
       if (io && user.currentSessionId) {
         io.to(`user_${user.id}`).emit('session_superseded');
       }
-
       await prisma.user.update({
         where: { id: user.id },
-        data: { 
-          currentSessionId: sessionId,
-          lastSeen: new Date(),
-          twoFactorVerified: false // Сбрасываем, если вдруг было true
-        }
+        data: { currentSessionId: sessionId, lastSeen: new Date(), twoFactorVerified: false }
       });
-
       emitStatsUpdate(io);
       if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-
       res.status(200).json({
         status: "success",
         data: {
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            mustChangePassword: user.mustChangePassword
-          },
+          user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
           token
         }
       });
     }
-
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ error: "Ошибка сервера при входе" });
   }
 };
 
-// 🔥 НОВЫЙ МЕТОД: ОТПРАВКА КОДА (Имитация)
-const send2FACode = async (req: Request, res: Response) => {
+export const send2FACode = async (req: Request, res: Response) => {
   try {
     const { userId } = req.body;
     const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
-
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
-    // Проверка блокировки 2FA
     const lockStatus = check2FALock(user);
     if (lockStatus.locked) {
       return res.status(429).json({ error: "Слишком много неудачных попыток. Попробуйте позже.", timeLeft: lockStatus.timeLeft });
     }
 
-    // Проверка задержки отправки (60 сек)
     if (user.twoFactorCodeSentAt) {
       const timePassed = Date.now() - user.twoFactorCodeSentAt.getTime();
       if (timePassed < CODE_RESEND_DELAY_MS) {
@@ -8855,16 +8847,8 @@ const send2FACode = async (req: Request, res: Response) => {
       }
     }
 
-    // Обновляем время отправки
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { twoFactorCodeSentAt: new Date() }
-    });
-
-    // ЗДЕСЬ БУДЕТ ЛОГИКА ОТПРАВКИ SMS/EMAIL
-    // Сейчас просто логируем код
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorCodeSentAt: new Date() } });
     console.log(`🔐 2FA CODE for ${user.email}: ${HARDCODED_2FA_CODE}`);
-
     res.json({ status: "success", message: "Код отправлен (см. консоль сервера)", debugCode: HARDCODED_2FA_CODE });
   } catch (error) {
     console.error("Send 2FA Code Error:", error);
@@ -8872,80 +8856,44 @@ const send2FACode = async (req: Request, res: Response) => {
   }
 };
 
-// 🔥 НОВЫЙ МЕТОД: ПРОВЕРКА КОДА
-const verify2FACode = async (req: Request, res: Response) => {
+export const verify2FACode = async (req: Request, res: Response) => {
   try {
     const { userId, code } = req.body;
     const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
-
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
-    // Проверка блокировки
     const lockStatus = check2FALock(user);
     if (lockStatus.locked) {
       return res.status(429).json({ error: "Аккаунт заблокирован после неудачных попыток.", timeLeft: lockStatus.timeLeft });
     }
 
-    // Проверка кода
     if (code !== HARDCODED_2FA_CODE) {
       const newAttempts = (user.twoFactorAttempts || 0) + 1;
-      
       if (newAttempts >= MAX_2FA_ATTEMPTS) {
-        // Блокируем
         const lockTime = new Date(Date.now() + LOCK_DURATION_MS);
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime }
-        });
+        await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime } });
         return res.status(429).json({ error: "Превышено количество попыток. Аккаунт заблокирован на 15 мин.", timeLeft: 900 });
       }
-
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { twoFactorAttempts: newAttempts }
-      });
-
+      await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: newAttempts } });
       const attemptsLeft = MAX_2FA_ATTEMPTS - newAttempts;
       return res.status(401).json({ error: "Неверный код", attemptsLeft });
     }
 
-    // ✅ УСПЕХ
-    // Сбрасываем попытки, ставим флаг verified, выдаем ТОКЕН
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() }
-    });
-
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: 0, twoFactorLockUntil: null, twoFactorVerified: true, lastSeen: new Date() } });
     const { token, sessionId } = generateToken(String(user.id), res);
-    
-    // Обновляем сессию
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { currentSessionId: sessionId }
-    });
-    
+    await prisma.user.update({ where: { id: user.id }, data: { currentSessionId: sessionId } });
     const io = req.app.get('io');
     emitStatsUpdate(io);
     if(io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-
-    res.json({
-      status: "success",
-      message: "2FA успешно пройдена",
-      data: {
-        user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
-        token
-      }
-    });
-
+    res.json({ status: "success", message: "2FA успешно пройдена", data: { user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token } });
   } catch (error) {
     console.error("Verify 2FA Error:", error);
     res.status(500).json({ error: "Ошибка проверки кода" });
   }
 };
 
-const logout = async (req: any, res: Response) => {
-   // Твой код logout
-   try {
+export const logout = async (req: any, res: Response) => {
+  try {
     const userId = req.user?.id;
     const io = req.app.get('io');
     if (userId) {
@@ -8961,7 +8909,7 @@ const logout = async (req: any, res: Response) => {
   }
 };
 
-const getProfile = async (req: AuthRequest, res: Response) => {
+export const getProfile = async (req: AuthRequest, res: Response) => {
   try {
     const user = req.user;
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -8973,8 +8921,7 @@ const getProfile = async (req: AuthRequest, res: Response) => {
   }
 };
 
-const forgotPassword = async (req: Request, res: Response) => {
-  // Твой код forgotPassword
+export const forgotPassword = async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
@@ -8993,11 +8940,9 @@ const forgotPassword = async (req: Request, res: Response) => {
   }
 };
 
-const resetPassword = async (req: Request, res: Response) => {
-  // Твой код resetPassword
+export const resetPassword = async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
-    if (!token || !newPassword) return res.status(400).json({ error: "Неверные данные" });
     const user = await prisma.user.findFirst({ where: { resetPasswordToken: token, resetPasswordExpires: { gte: new Date() } } });
     if (!user) return res.status(400).json({ error: "Ссылка недействительна или срок её действия истек" });
     const salt = await bcrypt.genSalt(10);
@@ -9009,8 +8954,6 @@ const resetPassword = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Ошибка сервера при смене пароля" });
   }
 };
-
-export { register, login, logout, getProfile, forgotPassword, resetPassword, send2FACode, verify2FACode };
 ```
 
 ### 📄 `src\controllers\chatController.ts`
@@ -9027,18 +8970,15 @@ const getProjectMessages = async (req: any, res: Response) => {
       where: { id: parseInt(projectId) },
       select: { partnerId: true }
     });
-
     if (!project) return res.status(404).json({ error: "Проект не найден" });
     if (userRole !== 'MANAGER' && project.partnerId !== userId) {
       return res.status(403).json({ error: "У вас нет доступа к переписке" });
     }
-
     const messages = await prisma.message.findMany({
       where: { projectId: parseInt(projectId) },
       orderBy: { createdAt: 'asc' },
       include: { sender: { select: { id: true, name: true, role: true } } }
     });
-
     res.json(messages);
   } catch (error) {
     console.error("Chat fetch error:", error);
@@ -9052,10 +8992,6 @@ const sendMessage = async (req: any, res: Response) => {
     const { text } = req.body;
     const senderId = req.user.id;
     const parsedProjectId = parseInt(projectId);
-
-    if (!text || text.trim().length === 0) return res.status(400).json({ error: "Сообщение не может быть пустым" });
-    if (text.length > 3000) return res.status(400).json({ error: "Сообщение слишком длинное (макс. 3000 симв.)" });
-
     const [message] = await prisma.$transaction([
       prisma.message.create({
         data: { text: text.trim(), projectId: parsedProjectId, senderId: senderId },
@@ -9063,13 +8999,11 @@ const sendMessage = async (req: any, res: Response) => {
       }),
       prisma.project.update({ where: { id: parsedProjectId }, data: { updatedAt: new Date() } })
     ]);
-
     const io = req.app.get('io');
     if (io) {
       io.to(`project_${parsedProjectId}`).emit('new_message', message);
       console.log(`✉️ [Chat] New message in PRJ-${parsedProjectId} from ${message.sender.name}`);
     }
-
     res.status(201).json(message);
   } catch (error) {
     console.error("Send message error:", error);
@@ -9081,50 +9015,24 @@ const markAsRead = async (req: any, res: Response) => {
   try {
     const { projectId } = req.params;
     const userId = req.user.id;
-    console.log(`📖 markAsRead called: projectId=${projectId}, userId=${userId}`);
-
-    // ✅ 1. СНАЧАЛА находим отправителей непрочитанных сообщений (пока isRead: false)
     const senders = await prisma.message.findMany({
-      where: {
-        projectId: parseInt(projectId),
-        isRead: false,
-        senderId: { not: userId }
-      },
+      where: { projectId: parseInt(projectId), isRead: false, senderId: { not: userId } },
       select: { senderId: true },
       distinct: ['senderId']
     });
-
-    // ✅ 2. ТОЛЬКО ПОСЛЕ этого обновляем БД
     const updateResult = await prisma.message.updateMany({
-      where: {
-        projectId: parseInt(projectId),
-        isRead: false,
-        senderId: { not: userId }
-      },
+      where: { projectId: parseInt(projectId), isRead: false, senderId: { not: userId } },
       data: { isRead: true }
     });
-
     console.log(`📖 Updated ${updateResult.count} messages for project ${projectId}`);
-
     const io = req.app.get('io');
     if (io && updateResult.count > 0) {
-      // Уведомляем отправителей в их личные комнаты
       for (const sender of senders) {
-        io.to(`user_${sender.senderId}`).emit('messages_read', { 
-          projectId: parseInt(projectId), 
-          readerId: userId 
-        });
+        io.to(`user_${sender.senderId}`).emit('messages_read', { projectId: parseInt(projectId), readerId: userId });
       }
-      
-      // Дублируем в комнату проекта
-      io.to(`project_${projectId}`).emit('messages_read', { 
-        projectId: parseInt(projectId), 
-        readerId: userId 
-      });
-      
+      io.to(`project_${projectId}`).emit('messages_read', { projectId: parseInt(projectId), readerId: userId });
       console.log(`📡 Emitted messages_read to ${senders.length} senders and project room`);
     }
-
     res.json({ success: true, updatedCount: updateResult.count });
   } catch (error) {
     console.error("Error marking messages as read:", error);
@@ -9143,61 +9051,31 @@ import { emitStatsUpdate } from '../utils/socketHelpers.js';
 
 export const createProject = async (req: any, res: Response) => {
   try {
-    const { 
-      formType, 
-      customerName, 
-      customerInn, 
-      purchaseMethod, 
-      executionDate, 
-      ...otherData 
-    } = req.body;
+    const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = req.body;
 
     const existingProject = await prisma.project.findFirst({
-      where: { 
-        customerInn, 
-        status: { in: ['PENDING', 'APPROVED', 'IN_PROGRESS'] } 
-      }
+      where: { customerInn, status: { in: ['PENDING', 'APPROVED', 'IN_PROGRESS'] } }
     });
-
     if (existingProject) {
-      return res.status(400).json({ 
-        error: "Проект с данным УНП заказчика уже зарегистрирован и находится в обработке." 
-      });
+      return res.status(400).json({ error: "Проект с данным УНП заказчика уже зарегистрирован и находится в обработке." });
     }
 
     const newProject = await prisma.project.create({
       data: {
-        number: null, 
-        status: 'PENDING',
-        formType,
-        customerName,
-        customerInn,
-        purchaseMethod,
-        executionDate: executionDate ? new Date(executionDate) : null,
-        partnerId: Number(req.user.id),
-        dynamicData: otherData 
+        number: null, status: 'PENDING', formType, customerName, customerInn,
+        purchaseMethod, executionDate: executionDate ? new Date(executionDate) : null,
+        partnerId: Number(req.user.id), dynamicData: otherData
       },
-      // Включаем partner чтобы менеджер сразу видел компанию
-      include: {
-        partner: { select: { id: true, name: true, companyName: true } }
-      }
+      include: { partner: { select: { id: true, name: true, companyName: true } } }
     });
 
     const io = req.app.get('io');
     if (io) {
-      // Все вкладки этого партнера получат новый проект
       io.to(`user_${req.user.id}`).emit('project_created', newProject);
-      // Менеджеры в admin_room тоже узнают о новой заявке
       io.to('admin_room').emit('project_created', newProject);
     }
-
     console.log(`[Pending 1C] Проект создан в БД, готов к отправке в 1С. ID: ${newProject.id}`);
-
-    res.status(201).json({
-      message: "Заявка успешно создана и передана на модерацию",
-      projectId: newProject.id
-    });
-
+    res.status(201).json({ message: "Заявка успешно создана и передана на модерацию", projectId: newProject.id });
   } catch (error) {
     console.error('Ошибка в projectController (create):', error);
     res.status(500).json({ error: "Внутренняя ошибка сервера при создании проекта" });
@@ -9208,23 +9086,17 @@ export const getProjects = async (req: any, res: Response) => {
   try {
     const userId = Number(req.user.id);
     const userRole = req.user.role;
-
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
     const search = (req.query.search as string || '').trim();
     const skip = (page - 1) * limit;
 
     let where: any = {};
-
-    if (userRole === 'USER') {
-      where.partnerId = userId;
-    }
-
+    if (userRole === 'USER') where.partnerId = userId;
     if (search) {
       const cleanSearch = search.replace(/^PRJ-/i, '');
       const searchId = parseInt(cleanSearch);
       const isSearchNumeric = /^\d+$/.test(cleanSearch);
-
       where = {
         ...where,
         OR: [
@@ -9240,19 +9112,11 @@ export const getProjects = async (req: any, res: Response) => {
 
     const [projects, totalCount] = await Promise.all([
       prisma.project.findMany({
-        where,
-        skip,
-        take: limit,
+        where, skip, take: limit,
         orderBy: { updatedAt: 'desc' },
         include: {
           partner: { select: { id: true, name: true, companyName: true } },
-          _count: {
-            select: {
-              messages: {
-                where: { isRead: false, senderId: { not: userId } }
-              }
-            }
-          }
+          _count: { select: { messages: { where: { isRead: false, senderId: { not: userId } } } } }
         }
       }),
       prisma.project.count({ where })
@@ -9264,14 +9128,7 @@ export const getProjects = async (req: any, res: Response) => {
       hasUnread: p._count.messages > 0,
       _count: undefined
     }));
-
-    res.json({
-      projects: processedProjects,
-      totalPages: Math.ceil(totalCount / limit),
-      currentPage: page,
-      totalCount
-    });
-
+    res.json({ projects: processedProjects, totalPages: Math.ceil(totalCount / limit), currentPage: page, totalCount });
   } catch (error) {
     console.error('Ошибка в getProjects:', error);
     res.status(500).json({ error: "Ошибка сервера при получении списка" });
@@ -9281,49 +9138,22 @@ export const getProjects = async (req: any, res: Response) => {
 export const updateProject = async (req: any, res: Response) => {
   try {
     const { id } = req.params;
-    const { 
-      formType, 
-      customerName, 
-      customerInn, 
-      purchaseMethod, 
-      executionDate, 
-      ...otherData 
-    } = req.body;
-
-    const project = await prisma.project.findUnique({
-      where: { id: Number(id) }
-    });
-
+    const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = req.body;
+    const project = await prisma.project.findUnique({ where: { id: Number(id) } });
     if (!project) return res.status(404).json({ error: "Проект не найден" });
-
     if (project.partnerId !== req.user.id && req.user.role !== 'MANAGER') {
       return res.status(403).json({ error: "Доступ запрещен" });
     }
-
     const updatedProject = await prisma.project.update({
       where: { id: Number(id) },
-      data: {
-        formType,
-        customerName,
-        customerInn,
-        purchaseMethod,
-        executionDate: executionDate ? new Date(executionDate) : null,
-        dynamicData: otherData,
-        updatedAt: new Date()
-      },
-      include: {
-        partner: { select: { id: true, name: true, companyName: true } }
-      }
+      data: { formType, customerName, customerInn, purchaseMethod, executionDate: executionDate ? new Date(executionDate) : null, dynamicData: otherData, updatedAt: new Date() },
+      include: { partner: { select: { id: true, name: true, companyName: true } } }
     });
-
     const io = req.app.get('io');
     if (io) {
-      // Все вкладки этого партнера получат обновлённый проект
       io.to(`user_${req.user.id}`).emit('project_updated', updatedProject);
-      // Менеджеры тоже видят изменения
       io.to('admin_room').emit('project_updated', updatedProject);
     }
-
     res.json({ message: "Проект обновлен", project: updatedProject });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при обновлении" });
@@ -9334,31 +9164,20 @@ export const updateProjectStatus = async (req: any, res: Response) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-
     if (req.user.role !== 'MANAGER' && req.user.role !== 'ADMIN') {
       return res.status(403).json({ error: "Недостаточно прав" });
     }
-
     const updatedProject = await prisma.project.update({
       where: { id: Number(id) },
-      data: { 
-        status,
-        lastEditorId: req.user.id, 
-        updatedAt: new Date()
-      },
-      include: {
-        partner: { select: { name: true, companyName: true, id: true } },
-        lastEditor: { select: { name: true } }
-      }
+      data: { status, lastEditorId: req.user.id, updatedAt: new Date() },
+      include: { partner: { select: { name: true, companyName: true, id: true } }, lastEditor: { select: { name: true } } }
     });
-
     const io = req.app.get('io');
     if (io) {
       io.to('admin_room').emit('project_status_changed', updatedProject);
       io.to(`user_${updatedProject.partnerId}`).emit('project_status_changed', updatedProject);
       await emitStatsUpdate(io);
     }
-
     res.json({ message: "Статус обновлен", project: updatedProject });
   } catch (error) {
     res.status(500).json({ error: "Ошибка смены статуса" });
@@ -9373,21 +9192,13 @@ import { prisma } from '../config/db.js';
 import bcrypt from 'bcrypt';
 
 let ioInstance: any = null;
-
-export const setIoInstance = (io: any) => { 
-  ioInstance = io; 
-};
-
-interface AuthRequest extends Request {
-  user?: any;
-}
+export const setIoInstance = (io: any) => { ioInstance = io; };
 
 const getOnlineUsersFromSockets = () => {
   if (!ioInstance) return { onlineUsers: 0, onlineManagers: 0 };
   const uniqueUsers = new Set<number>();
   const uniqueManagers = new Set<number>();
   const sockets = ioInstance.sockets.sockets; 
-  
   sockets.forEach((socket: any) => {
     const userId = socket.data?.userId;
     const userRole = socket.data?.userRole;
@@ -9424,12 +9235,11 @@ export const emitStatsUpdate = async (io: any) => {
   }
 };
 
-const getUsers = async (req: any, res: Response) => {
+export const getUsers = async (req: any, res: Response) => {
   try {
     const { page = 1, limit = 10, search = '', role = '' } = req.query;
     const take = Number(limit);
     const skip = (Number(page) - 1) * take;
-
     const where: any = {
       role: { not: 'ADMIN' },
       ...(role && role !== 'ALL' && { role }),
@@ -9442,62 +9252,39 @@ const getUsers = async (req: any, res: Response) => {
         ],
       }),
     };
-
     const [users, totalCount] = await Promise.all([
       prisma.user.findMany({
         where,
         select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-          companyName: true,
-          unp: true,
-          createdAt: true,
-          lastSeen: true,
-          isBlocked: true,
-          // Блокировка входа
-          lockUntil: true,
-          failedLoginAttempts: true,
-          // 🔥 НОВОЕ: Блокировка 2FA
-          twoFactorLockUntil: true,
-          twoFactorAttempts: true,
+          id: true, name: true, email: true, role: true, companyName: true, unp: true,
+          createdAt: true, lastSeen: true, isBlocked: true,
+          lockUntil: true, failedLoginAttempts: true,
+          twoFactorLockUntil: true, twoFactorAttempts: true,
         },
-        orderBy: { createdAt: 'desc' },
-        take,
-        skip,
+        orderBy: { createdAt: 'desc' }, take, skip,
       }),
       prisma.user.count({ where }),
     ]);
-
     const onlineUserIds = new Set<number>();
     if (ioInstance) {
        ioInstance.sockets.sockets.forEach((s: any) => {
          if (s.data?.userId) onlineUserIds.add(s.data.userId);
        });
     }
-
     const usersWithOnlineStatus = users.map(u => ({
       ...u,
       isOnline: onlineUserIds.has(u.id),
       lockUntil: u.lockUntil ? u.lockUntil.toISOString() : null,
       twoFactorLockUntil: u.twoFactorLockUntil ? u.twoFactorLockUntil.toISOString() : null,
     }));
-
-    res.status(200).json({
-      status: 'success',
-      users: usersWithOnlineStatus,
-      totalCount,
-      totalPages: Math.ceil(totalCount / take),
-      currentPage: Number(page)
-    });
+    res.status(200).json({ status: 'success', users: usersWithOnlineStatus, totalCount, totalPages: Math.ceil(totalCount / take), currentPage: Number(page) });
   } catch (error) {
     console.error('API Error:', error);
     res.status(500).json({ status: 'error', message: 'Не удалось получить список пользователей' });
   }
 };
 
-const deleteUser = async (req: Request, res: Response) => {
+export const deleteUser = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     if (Number(id) === (req as any).user.id) {
@@ -9505,10 +9292,8 @@ const deleteUser = async (req: Request, res: Response) => {
     }
     const user = await prisma.user.findUnique({ where: { id: Number(id) } });
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
-
     await prisma.user.delete({ where: { id: Number(id) } });
     emitStatsUpdate(req.app.get('io'));
-
     res.status(200).json({ status: "success", message: "Пользователь успешно удален" });
   } catch (error) {
     console.error(error);
@@ -9516,14 +9301,13 @@ const deleteUser = async (req: Request, res: Response) => {
   }
 };
 
-const toggleBlock = async (req: Request, res: Response) => {
+export const toggleBlock = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const targetId = Number(id);
     if (targetId === (req as any).user.id) {
       return res.status(400).json({ error: "Вы не можете заблокировать себя" });
     }
-
     const user = await prisma.user.findUnique({ where: { id: targetId } });
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
     if (user.role === 'ADMIN') return res.status(400).json({ error: "Нельзя заблокировать администратора" });
@@ -9531,46 +9315,19 @@ const toggleBlock = async (req: Request, res: Response) => {
     let newBlockedState = !user.isBlocked;
     let message = '';
     const now = new Date();
-
-    // 🔥 ПРИОРИТЕТ РАЗБЛОКИРОВКИ:
-    // 1. Снимаем блокировку входа (Пароль)
-    // 2. Снимаем блокировку 2FA (SMS)
-    // 3. Переключаем ручную блокировку
-
     const isLoginLocked = user.lockUntil && user.lockUntil > now;
     const is2FALocked = user.twoFactorLockUntil && user.twoFactorLockUntil > now;
 
     if (isLoginLocked) {
-      await prisma.user.update({
-        where: { id: targetId },
-        data: {
-          lockUntil: null,
-          failedLoginAttempts: 0,
-          currentSessionId: null
-        }
-      });
+      await prisma.user.update({ where: { id: targetId }, data: { lockUntil: null, failedLoginAttempts: 0, currentSessionId: null } });
       message = 'Снята блокировка входа (брутфорс пароля)';
       newBlockedState = false;
     } else if (is2FALocked) {
-      await prisma.user.update({
-        where: { id: targetId },
-        data: {
-          twoFactorLockUntil: null,
-          twoFactorAttempts: 0,
-          currentSessionId: null
-        }
-      });
+      await prisma.user.update({ where: { id: targetId }, data: { twoFactorLockUntil: null, twoFactorAttempts: 0, currentSessionId: null } });
       message = 'Снята блокировка 2FA (брутфорс SMS)';
       newBlockedState = false;
     } else {
-      // Ручная блокировка
-      await prisma.user.update({
-        where: { id: targetId },
-        data: {
-          isBlocked: newBlockedState,
-          ...(newBlockedState && { currentSessionId: null })
-        }
-      });
+      await prisma.user.update({ where: { id: targetId }, data: { isBlocked: newBlockedState, ...(newBlockedState && { currentSessionId: null }) } });
       message = newBlockedState ? 'Пользователь заблокирован вручную' : 'Ручная блокировка снята';
     }
 
@@ -9581,43 +9338,29 @@ const toggleBlock = async (req: Request, res: Response) => {
       } else if (!isLoginLocked && !is2FALocked && newBlockedState) {
          io.to(`user_${targetId}`).emit('user_blocked');
       }
-      
-      io.to('admin_room').emit('user:blocked_status_changed', {
-        userId: targetId,
-        isBlocked: newBlockedState,
-        wasSystemLock: isLoginLocked || is2FALocked
-      });
-
+      io.to('admin_room').emit('user:blocked_status_changed', { userId: targetId, isBlocked: newBlockedState, wasSystemLock: isLoginLocked || is2FALocked });
       await emitStatsUpdate(io); 
     }
-
-    res.status(200).json({
-      status: 'success',
-      message,
-      isBlocked: newBlockedState
-    });
+    res.status(200).json({ status: 'success', message, isBlocked: newBlockedState });
   } catch (error) {
     console.error('Toggle block error:', error);
     res.status(500).json({ error: "Ошибка при изменении статуса блокировки" });
   }
 };
 
-const changeDefaultPassword = async (req: AuthRequest, res: Response) => {
+export const changeDefaultPassword = async (req: any, res: Response) => {
   try {
     const { newPassword } = req.body;
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
-    await prisma.user.update({
-      where: { id: req.user.id },
-      data: { password: hashedPassword, mustChangePassword: false }
-    });
+    await prisma.user.update({ where: { id: req.user.id }, data: { password: hashedPassword, mustChangePassword: false } });
     res.json({ status: "success" });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при смене пароля" });
   }
 };
 
-const getAdminStats = async (req: Request, res: Response) => {
+export const getAdminStats = async (req: Request, res: Response) => {
   try {
     const stats = await fetchStatsInternal();
     res.status(200).json(stats);
@@ -9626,8 +9369,6 @@ const getAdminStats = async (req: Request, res: Response) => {
     res.status(500).json({ status: 'error', message: 'Не удалось собрать статистику' });
   }
 };
-
-export { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock };
 ```
 
 ### 📄 `src\middleware\adminMiddleware.ts`
@@ -9759,73 +9500,93 @@ export const managerMiddleware = (req: any, res: Response, next: NextFunction) =
 };
 ```
 
+### 📄 `src\middleware\validate.ts`
+```typescript
+import type { Request, Response, NextFunction } from 'express';
+import { z, ZodError } from 'zod';
+
+export const validate = (schema: z.ZodObject<any, any> | z.ZodEffects<any>) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      // Валидируем тело запроса
+      req.body = await schema.parseAsync(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const errors = error.issues.map(issue => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        }));
+        return res.status(400).json({ 
+          status: 'error', 
+          message: 'Ошибка валидации данных', 
+          errors 
+        });
+      }
+      next(error);
+    }
+  };
+};
+```
+
 ### 📄 `src\routes\authRoutes.ts`
 ```typescript
 import express from 'express';
 import { 
   register, login, logout, getProfile, 
   forgotPassword, resetPassword, 
-  send2FACode, verify2FACode // Импортируем новые функции
-} from '../../src/controllers/authController';
+  send2FACode, verify2FACode 
+} from '../controllers/authController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
+import { validate, loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, twoFASendSchema, twoFAVerifySchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 
-router.post('/register', authMiddleware, adminMiddleware, register);
-router.post('/login', login);
+router.post('/register', authMiddleware, adminMiddleware, validate(registerSchema), register);
+router.post('/login', validate(loginSchema), login);
 router.post('/logout', logout);
 router.get('/profile', authMiddleware, getProfile);
-
-// 2FA Routes (публичные, так как юзер еще не залогинен полноценно)
-router.post('/2fa/send', send2FACode);
-router.post('/2fa/verify', verify2FACode);
-
-router.post('/forgot-password', forgotPassword);
-router.post('/reset-password', resetPassword);
+router.post('/2fa/send', validate(twoFASendSchema), send2FACode);
+router.post('/2fa/verify', validate(twoFAVerifySchema), verify2FACode);
+router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
+router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 
 export default router;
 ```
 
 ### 📄 `src\routes\chatRoutes.ts`
 ```typescript
-import express from 'express'
 import { Router } from 'express';
-import { getProjectMessages, sendMessage, markAsRead} from '../../src/controllers/chatController';
+import { getProjectMessages, sendMessage, markAsRead } from '../controllers/chatController';
 import { authMiddleware } from '../middleware/authMiddleware';
+import { validate, sendMessageSchema } from '../utils/validationSchemas';
 
-const router =Router()
+const router = Router();
+
 router.get('/:projectId/messages', authMiddleware, getProjectMessages);
-router.post('/:projectId/messages', authMiddleware, sendMessage);
+router.post('/:projectId/messages', authMiddleware, validate(sendMessageSchema), sendMessage);
 router.patch('/:projectId/read', authMiddleware, markAsRead);
 
-export default router
+export default router;
 ```
 
 ### 📄 `src\routes\projectRoutes.ts`
 ```typescript
 import { Router } from 'express';
-import { createProject, getProjects,updateProject, updateProjectStatus } from '../controllers/projectController.js';
-import { authMiddleware } from '../middleware/authMiddleware.js';
-import { managerMiddleware } from '../middleware/managerMiddleware.js';
+import { createProject, getProjects, updateProject, updateProjectStatus } from '../controllers/projectController';
+import { authMiddleware } from '../middleware/authMiddleware';
+import { managerMiddleware } from '../middleware/managerMiddleware';
+import { validate, createProjectSchema, updateProjectSchema, updateProjectStatusSchema } from '../utils/validationSchemas';
 
 const router = Router();
 
-// Защищаем все роуты проектов авторизацией
 router.use(authMiddleware);
 
-// POST /api/projects — создание новой заявки
-router.post('/', createProject);
-
-// GET /api/projects — получение списка (фильтрация внутри контроллера)
+router.post('/', validate(createProjectSchema), createProject);
 router.get('/', getProjects);
-
-// PUT /api/projects — обновление конкретного проекта по его id
-router.put('/:id', updateProject);
-
-router.patch('/:id/status', authMiddleware, managerMiddleware, updateProjectStatus);
-
-
+router.put('/:id', validate(updateProjectSchema), updateProject);
+router.patch('/:id/status', managerMiddleware, validate(updateProjectStatusSchema), updateProjectStatus);
 
 export default router;
 ```
@@ -9833,16 +9594,17 @@ export default router;
 ### 📄 `src\routes\userRoutes.ts`
 ```typescript
 import express from 'express';
-import { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock } from '../../src/controllers/userController';
+import { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock } from '../controllers/userController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
+import { validate, changePasswordSchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 
 router.get('/users', authMiddleware, adminMiddleware, getUsers);
 router.delete('/users/:id', authMiddleware, adminMiddleware, deleteUser);
-router.patch('/users/:id/block', authMiddleware, adminMiddleware, toggleBlock); // ← новый роут
-router.post('/change-password', authMiddleware, changeDefaultPassword);
+router.patch('/users/:id/block', authMiddleware, adminMiddleware, toggleBlock);
+router.post('/change-password', authMiddleware, validate(changePasswordSchema), changeDefaultPassword);
 router.get('/admin/stats', authMiddleware, adminMiddleware, getAdminStats);
 
 export default router;
@@ -10011,6 +9773,108 @@ export const emitStatsUpdate = async (io: any) => {
   } catch (e) {
     console.error("Ошибка сокетов:", e);
   }
+};
+```
+
+### 📄 `src\utils\validationSchemas.ts`
+```typescript
+import { z } from 'zod';
+import type { Request, Response, NextFunction } from 'express';
+
+// ----------------------
+// USER / AUTH SCHEMAS
+// ----------------------
+
+export const loginSchema = z.object({
+  email: z.string().email('Некорректный email'),
+  password: z.string().min(1, 'Пароль обязателен'),
+});
+
+export const registerSchema = z.object({
+  email: z.string().email('Некорректный email'),
+  password: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
+  name: z.string().optional(),
+  role: z.enum(['USER', 'MANAGER']).optional(),
+  companyName: z.string().optional(),
+  unp: z.string().optional(),
+  phone: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.role === 'MANAGER' && !data.name) {
+    ctx.addIssue({ code: 'custom', path: ['name'], message: 'Для менеджера обязательно ФИО' });
+  }
+  if (data.role === 'USER' && (!data.companyName || !data.unp || !data.phone)) {
+    ctx.addIssue({ code: 'custom', path: ['companyName'], message: 'Для партнера обязательны название компании, УНП и телефон' });
+  }
+});
+
+export const changePasswordSchema = z.object({
+  newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email('Некорректный email'),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().uuid('Неверный формат токена'),
+  newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
+});
+
+export const twoFASendSchema = z.object({
+  userId: z.number().int().positive(),
+});
+
+export const twoFAVerifySchema = z.object({
+  userId: z.number().int().positive(),
+  code: z.string().length(6, 'Код должен состоять из 6 цифр'),
+});
+
+// ----------------------
+// PROJECT SCHEMAS
+// ----------------------
+
+export const createProjectSchema = z.object({
+  formType: z.string().min(1, 'Не выбран тип формы'),
+  customerName: z.string().min(1, 'Укажите наименование заказчика'),
+  customerInn: z.string().regex(/^\d{9}$/, 'УНП должен содержать ровно 9 цифр'),
+  purchaseMethod: z.string().optional(),
+  executionDate: z.string().optional().or(z.date()).or(z.null()),
+}).passthrough();
+
+export const updateProjectSchema = createProjectSchema.partial();
+
+export const updateProjectStatusSchema = z.object({
+  status: z.enum(['PENDING', 'IN_PROGRESS', 'APPROVED', 'REJECTED', 'REVISION', 'CLOSED']),
+});
+
+// ----------------------
+// CHAT SCHEMAS
+// ----------------------
+
+export const sendMessageSchema = z.object({
+  text: z.string().min(1, 'Сообщение не может быть пустым').max(3000, 'Максимум 3000 символов'),
+});
+
+// ----------------------
+// MIDDLEWARE ВАЛИДАЦИИ
+// ----------------------
+
+export const validate = (schema: z.ZodObject<any, any> | z.ZodEffects<any>) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await schema.parseAsync(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const errors = error.issues.map(issue => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        }));
+        return res.status(400).json({ status: 'error', message: 'Ошибка валидации данных', errors });
+      }
+      next(error);
+    }
+  };
 };
 ```
 

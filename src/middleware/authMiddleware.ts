@@ -65,7 +65,7 @@ export const authMiddleware = async (
     const lastSeen = new Date(user.lastSeen);
     const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
     
-    const LIMIT_USER = 30;
+    const LIMIT_USER = 1;
     const LIMIT_OTHERS = 120;
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 

@@ -180,3 +180,20 @@ export const getAdminStats = async (req: Request, res: Response) => {
     res.status(500).json({ status: 'error', message: 'Не удалось собрать статистику' });
   }
 };
+
+export const emitUserLockStatus = (io: any, userId: number, updates: {
+  lockUntil?: Date | null;
+  failedLoginAttempts?: number;
+  twoFactorLockUntil?: Date | null;
+  twoFactorAttempts?: number;
+  isBlocked?: boolean;
+}) => {
+  if (!io) return;
+  io.to('admin_room').emit('user:blocked_status_changed', {
+    userId,
+    ...updates,
+    // преобразуем Date в ISO строки для удобства клиента
+    lockUntil: updates.lockUntil ? updates.lockUntil.toISOString() : null,
+    twoFactorLockUntil: updates.twoFactorLockUntil ? updates.twoFactorLockUntil.toISOString() : null,
+  });
+};

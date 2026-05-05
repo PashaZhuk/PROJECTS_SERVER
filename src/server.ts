@@ -12,7 +12,7 @@ import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
-import { fetchStatsInternal, setIoInstance } from './controllers/userController.js';
+import { fetchStatsInternal, setIoInstance, emitUserLockStatus } from './controllers/userController.js';
 
 config();
 connectDB();
@@ -60,7 +60,7 @@ const io = new Server(httpServer, {
 setIoInstance(io);
 app.set('io', io);
 
-// --- Middleware авторизации сокетов (проверка JWT из cookies) ---
+// --- Middleware авторизации сокетов (JWT из cookies) ---
 io.use(async (socket, next) => {
   try {
     const cookieHeader = socket.handshake.headers.cookie;
@@ -69,7 +69,6 @@ io.use(async (socket, next) => {
       return next(new Error('Authentication error: no cookies'));
     }
 
-    // Парсим cookies вручную
     const cookies: Record<string, string> = {};
     cookieHeader.split(';').forEach(cookie => {
       const [name, value] = cookie.trim().split('=');
@@ -84,33 +83,20 @@ io.use(async (socket, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string; sessionId: string };
     const userId = Number(decoded.id);
-    if (isNaN(userId)) {
-      return next(new Error('Invalid user ID in token'));
-    }
+    if (isNaN(userId)) return next(new Error('Invalid user ID in token'));
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, role: true, isBlocked: true, currentSessionId: true, name: true }
     });
 
-    if (!user) {
-      return next(new Error('User not found'));
-    }
-
-    if (user.isBlocked) {
-      return next(new Error('User is blocked'));
-    }
-
-    // Проверка сессии (опционально, но рекомендуется)
+    if (!user) return next(new Error('User not found'));
+    if (user.isBlocked) return next(new Error('User is blocked'));
     if (user.currentSessionId && user.currentSessionId !== decoded.sessionId) {
       return next(new Error('Session superseded'));
     }
 
-    socket.data.user = {
-      id: user.id,
-      role: user.role,
-      name: user.name
-    };
+    socket.data.user = { id: user.id, role: user.role, name: user.name };
     console.log(`[Socket Auth] Authorized socket ${socket.id} as ${user.name} (${user.role})`);
     next();
   } catch (err: any) {
@@ -155,30 +141,36 @@ io.on('connection', (socket) => {
 
   console.log(`🟢 New connection: ${socket.id} (user ${user.id}, ${user.role})`);
 
-  // Присоединение к личной комнате пользователя (для уведомлений)
+  // Присоединение к личной комнате пользователя
   socket.join(`user_${user.id}`);
 
-  // Подписка админов на статистику
+  // Админы и менеджеры подписываются на комнату для получения админских событий (онлайн/офлайн, статистика)
   if (user.role === 'ADMIN' || user.role === 'MANAGER') {
     socket.join('admin_room');
+    console.log(`📡 User ${user.id} (${user.role}) joined admin_room`);
     // Отправляем текущую статистику сразу
     fetchStatsInternal().then(stats => {
       socket.emit('stats_updated', stats);
     }).catch(err => console.error('Stats error:', err));
   }
 
-  // Обработка выхода пользователя (logout)
-  socket.on('user_logging_out', async () => {
-    console.log(`🚪 User ${user.id} logged out intentionally`);
-    socket.leave(`user_${user.id}`);
-    socket.leave('admin_room');
-    // Пересчитать статистику и разослать админам
-    const stats = await fetchStatsInternal();
-    io.to('admin_room').emit('stats_updated', stats);
-    io.to('admin_room').emit('user:offline', user.id);
+  // --- Обработка identify_user (уже авторизованы, но для совместимости) ---
+  socket.on('identify_user', async ({ userId, userRole }) => {
+    // Можно просто проигнорировать, так как уже есть user в socket.data
+    console.log(`[identify_user] received from ${userId} (${userRole}) but already authorized`);
+    // Убедимся, что админ/менеджер в admin_room (повторно)
+    if (userRole === 'ADMIN' || userRole === 'MANAGER') {
+      socket.join('admin_room');
+      const stats = await fetchStatsInternal();
+      socket.emit('stats_updated', stats);
+    }
+    // Уведомляем админов о том, что этот пользователь онлайн (если он не админ)
+    if (userRole !== 'ADMIN') {
+      io.to('admin_room').emit('user:online', userId);
+    }
   });
 
-  // Присоединение к комнате проекта (для чата)
+  // --- Присоединение к комнате проекта (чаты) ---
   socket.on('join_project', ({ projectId }) => {
     if (!projectId) return;
     const room = `project_${projectId}`;
@@ -186,12 +178,32 @@ io.on('connection', (socket) => {
     console.log(`📢 [Socket] ${user.name || user.id} (${user.role}) joined room: ${room}`);
   });
 
-  // Отписка от статистики (если нужно)
+  // --- Выход пользователя (логаут) ---
+  socket.on('user_logging_out', async () => {
+    console.log(`🚪 User ${user.id} logged out intentionally`);
+    socket.leave(`user_${user.id}`);
+    socket.leave('admin_room');
+    // Уведомить админов, что пользователь офлайн
+    io.to('admin_room').emit('user:offline', user.id);
+    // Пересчитать статистику и разослать админам
+    const stats = await fetchStatsInternal();
+    io.to('admin_room').emit('stats_updated', stats);
+  });
+
+  // --- Подписка на админскую статистику (для уже авторизованных) ---
+  socket.on('subscribe_admin_stats', async () => {
+    if (user.role === 'ADMIN' || user.role === 'MANAGER') {
+      socket.join('admin_room');
+      const stats = await fetchStatsInternal();
+      socket.emit('stats_updated', stats);
+    }
+  });
+
   socket.on('unsubscribe_admin_stats', () => {
     socket.leave('admin_room');
   });
 
-  // Обработка отключения (закрытие вкладки)
+  // --- Отключение (закрытие вкладки) ---
   socket.on('disconnect', async (reason) => {
     console.log(`🔴 Disconnected: ${socket.id}, user ${user.id}, reason: ${reason}`);
     // Задержка, чтобы не сработало при перезагрузке страницы
@@ -200,9 +212,12 @@ io.on('connection', (socket) => {
       const stillConnected = activeSockets.some(s => s.data.user?.id === user.id);
       if (!stillConnected) {
         console.log(`📡 User ${user.id} is now fully offline`);
+        // Уведомить админов о полном офлайне (если пользователь не админ)
+        if (user.role !== 'ADMIN') {
+          io.to('admin_room').emit('user:offline', user.id);
+        }
         const stats = await fetchStatsInternal();
         io.to('admin_room').emit('stats_updated', stats);
-        io.to('admin_room').emit('user:offline', user.id);
       }
     }, 1500);
   });
