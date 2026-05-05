@@ -3,6 +3,7 @@ import { prisma } from '../config/db.js';
 import { emitStatsUpdate } from '../utils/socketHelpers.js';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
+import logger from '../utils/logger';
 
 export const createProject = asyncHandler(async (req: any, res: Response) => {
   const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = req.body;
@@ -11,6 +12,14 @@ export const createProject = asyncHandler(async (req: any, res: Response) => {
     where: { customerInn, status: { in: ['PENDING', 'APPROVED', 'IN_PROGRESS'] } }
   });
   if (existingProject) {
+    logger.warn('Attempt to create duplicate project', { 
+      customerInn, 
+      userId: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      ...req.logMeta 
+    });
     throw new AppError(400, "Проект с данным УНП заказчика уже зарегистрирован и находится в обработке.");
   }
 
@@ -28,7 +37,15 @@ export const createProject = asyncHandler(async (req: any, res: Response) => {
     io.to(`user_${req.user.id}`).emit('project_created', newProject);
     io.to('admin_room').emit('project_created', newProject);
   }
-  console.log(`[Pending 1C] Проект создан в БД, готов к отправке в 1С. ID: ${newProject.id}`);
+  logger.info('Project created', { 
+    projectId: newProject.id, 
+    customerName, 
+    customerInn, 
+    userId: req.user.id,
+    email: req.user.email,
+    name: req.user.name,
+    ...req.logMeta 
+  });
   res.status(201).json({ message: "Заявка успешно создана и передана на модерацию", projectId: newProject.id });
 });
 
@@ -86,6 +103,14 @@ export const updateProject = asyncHandler(async (req: any, res: Response) => {
   const project = await prisma.project.findUnique({ where: { id: Number(id) } });
   if (!project) throw new AppError(404, "Проект не найден");
   if (project.partnerId !== req.user.id && req.user.role !== 'MANAGER') {
+    logger.warn('Unauthorized project update attempt', { 
+      projectId: Number(id), 
+      userId: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      ...req.logMeta 
+    });
     throw new AppError(403, "Доступ запрещен");
   }
   const updatedProject = await prisma.project.update({
@@ -98,6 +123,13 @@ export const updateProject = asyncHandler(async (req: any, res: Response) => {
     io.to(`user_${req.user.id}`).emit('project_updated', updatedProject);
     io.to('admin_room').emit('project_updated', updatedProject);
   }
+  logger.info('Project updated', { 
+    projectId: Number(id), 
+    userId: req.user.id,
+    email: req.user.email,
+    name: req.user.name,
+    ...req.logMeta 
+  });
   res.json({ message: "Проект обновлен", project: updatedProject });
 });
 
@@ -105,8 +137,19 @@ export const updateProjectStatus = asyncHandler(async (req: any, res: Response) 
   const { id } = req.params;
   const { status } = req.body;
   if (req.user.role !== 'MANAGER' && req.user.role !== 'ADMIN') {
+    logger.warn('Unauthorized status change attempt', { 
+      projectId: Number(id), 
+      userId: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      ...req.logMeta 
+    });
     throw new AppError(403, "Недостаточно прав");
   }
+  const project = await prisma.project.findUnique({ where: { id: Number(id) } });
+  if (!project) throw new AppError(404, "Проект не найден");
+  const oldStatus = project.status;
   const updatedProject = await prisma.project.update({
     where: { id: Number(id) },
     data: { status, lastEditorId: req.user.id, updatedAt: new Date() },
@@ -118,5 +161,14 @@ export const updateProjectStatus = asyncHandler(async (req: any, res: Response) 
     io.to(`user_${updatedProject.partnerId}`).emit('project_status_changed', updatedProject);
     await emitStatsUpdate(io);
   }
+  logger.info('Project status changed', { 
+    projectId: Number(id), 
+    oldStatus, 
+    newStatus: status, 
+    userId: req.user.id,
+    email: req.user.email,
+    name: req.user.name,
+    ...req.logMeta 
+  });
   res.json({ message: "Статус обновлен", project: updatedProject });
 });

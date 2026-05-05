@@ -7,14 +7,17 @@ import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import helmet from 'helmet';
+import morgan from 'morgan';
 import { connectDB } from './config/db.js';
 import { prisma } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
-import { fetchStatsInternal, setIoInstance, emitUserLockStatus } from './controllers/userController.js';
+import adminRoutes from './routes/adminRoutes'
+import { fetchStatsInternal, setIoInstance } from './controllers/userController.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import logger from './utils/logger.js';
 
 config();
 connectDB();
@@ -61,6 +64,45 @@ app.use(
   })
 );
 
+// --- Middleware для обогащения req.logMeta (IP, userAgent) ---
+app.use((req, res, next) => {
+  req.logMeta = {
+    ip: req.ip || req.socket.remoteAddress,
+    userAgent: req.headers['user-agent'],
+    method: req.method,
+    url: req.url,
+  };
+  next();
+});
+
+// --- HTTP request logging (morgan + winston) ---
+const morganStream = {
+  write: (message: string) => {
+    logger.info(message.trim());
+  },
+};
+app.use(morgan('combined', { stream: morganStream }));
+
+// --- CORS ---
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(cookieParser());
+
+// --- Rate limiting ---
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
@@ -75,6 +117,17 @@ const chatLimiter = rateLimit({
   message: { error: "Вы отправляете сообщения слишком часто. Подождите минуту." }
 });
 
+app.use('/api/', generalLimiter);
+app.use('/api/auth', authRoutes);
+app.use('/api/user', userRoutes);
+app.use('/api/projects', projectRoutes);
+app.use('/api/chat', chatLimiter, chatRoutes);
+app.use('/api/admin', adminRoutes);
+
+// --- Global error handler (после всех роутов) ---
+app.use(errorHandler);
+
+// --- HTTP Server & Socket.IO ---
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -94,7 +147,7 @@ const io = new Server(httpServer, {
 setIoInstance(io);
 app.set('io', io);
 
-// --- Middleware авторизации сокетов (JWT из cookies) ---
+// --- Socket.IO authentication middleware ---
 io.use(async (socket, next) => {
   try {
     const cookieHeader = socket.handshake.headers.cookie;
@@ -139,34 +192,6 @@ io.use(async (socket, next) => {
   }
 });
 
-// --- Express middleware ---
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-app.use(cookieParser());
-
-app.use('/api/', generalLimiter);
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/chat', chatLimiter, chatRoutes);
-
-// Глобальный обработчик ошибок (должен быть последним)
-app.use(errorHandler);
-
 // --- Socket.IO event handlers ---
 io.on('connection', (socket) => {
   const user = socket.data.user;
@@ -178,22 +203,16 @@ io.on('connection', (socket) => {
 
   console.log(`🟢 New connection: ${socket.id} (user ${user.id}, ${user.role})`);
 
-  // Присоединение к личной комнате пользователя
   socket.join(`user_${user.id}`);
 
-  // Админы и менеджеры подписываются на комнату для получения админских событий (онлайн/офлайн, статистика)
   if (user.role === 'ADMIN' || user.role === 'MANAGER') {
     socket.join('admin_room');
-    console.log(`📡 User ${user.id} (${user.role}) joined admin_room`);
-    // Отправляем текущую статистику сразу
     fetchStatsInternal().then(stats => {
       socket.emit('stats_updated', stats);
     }).catch(err => console.error('Stats error:', err));
   }
 
-  // --- Обработка identify_user (уже авторизованы, но для совместимости) ---
   socket.on('identify_user', async ({ userId, userRole }) => {
-    console.log(`[identify_user] received from ${userId} (${userRole}) but already authorized`);
     if (userRole === 'ADMIN' || userRole === 'MANAGER') {
       socket.join('admin_room');
       const stats = await fetchStatsInternal();
@@ -204,7 +223,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- Присоединение к комнате проекта (чаты) ---
   socket.on('join_project', ({ projectId }) => {
     if (!projectId) return;
     const room = `project_${projectId}`;
@@ -212,7 +230,6 @@ io.on('connection', (socket) => {
     console.log(`📢 [Socket] ${user.name || user.id} (${user.role}) joined room: ${room}`);
   });
 
-  // --- Выход пользователя (логаут) ---
   socket.on('user_logging_out', async () => {
     console.log(`🚪 User ${user.id} logged out intentionally`);
     socket.leave(`user_${user.id}`);
@@ -222,7 +239,6 @@ io.on('connection', (socket) => {
     io.to('admin_room').emit('stats_updated', stats);
   });
 
-  // --- Подписка на админскую статистику (для уже авторизованных) ---
   socket.on('subscribe_admin_stats', async () => {
     if (user.role === 'ADMIN' || user.role === 'MANAGER') {
       socket.join('admin_room');
@@ -235,7 +251,6 @@ io.on('connection', (socket) => {
     socket.leave('admin_room');
   });
 
-  // --- Отключение (закрытие вкладки) ---
   socket.on('disconnect', async (reason) => {
     console.log(`🔴 Disconnected: ${socket.id}, user ${user.id}, reason: ${reason}`);
     setTimeout(async () => {

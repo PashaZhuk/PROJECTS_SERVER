@@ -3,6 +3,7 @@ import { prisma } from '../config/db.js';
 import bcrypt from 'bcrypt';
 import { AppError } from '../utils/AppError';
 import { asyncHandler } from '../utils/asyncHandler';
+import logger from '../utils/logger';
 
 let ioInstance: any = null;
 export const setIoInstance = (io: any) => { ioInstance = io; };
@@ -48,6 +49,22 @@ export const emitStatsUpdate = async (io: any) => {
   }
 };
 
+export const emitUserLockStatus = (io: any, userId: number, updates: {
+  lockUntil?: Date | null;
+  failedLoginAttempts?: number;
+  twoFactorLockUntil?: Date | null;
+  twoFactorAttempts?: number;
+  isBlocked?: boolean;
+}) => {
+  if (!io) return;
+  io.to('admin_room').emit('user:blocked_status_changed', {
+    userId,
+    ...updates,
+    lockUntil: updates.lockUntil ? updates.lockUntil.toISOString() : null,
+    twoFactorLockUntil: updates.twoFactorLockUntil ? updates.twoFactorLockUntil.toISOString() : null,
+  });
+};
+
 export const getUsers = asyncHandler(async (req: any, res: Response) => {
   const { page = 1, limit = 10, search = '', role = '' } = req.query;
   const take = Number(limit);
@@ -68,19 +85,10 @@ export const getUsers = asyncHandler(async (req: any, res: Response) => {
     prisma.user.findMany({
       where,
       select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        companyName: true,
-        unp: true,
-        createdAt: true,
-        lastSeen: true,
-        isBlocked: true,
-        lockUntil: true,
-        failedLoginAttempts: true,
-        twoFactorLockUntil: true,
-        twoFactorAttempts: true,
+        id: true, name: true, email: true, role: true, companyName: true, unp: true,
+        createdAt: true, lastSeen: true, isBlocked: true,
+        lockUntil: true, failedLoginAttempts: true,
+        twoFactorLockUntil: true, twoFactorAttempts: true,
       },
       orderBy: { createdAt: 'desc' },
       take,
@@ -112,6 +120,7 @@ export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
   if (!user) throw new AppError(404, "Пользователь не найден");
   await prisma.user.delete({ where: { id: Number(id) } });
   emitStatsUpdate(req.app.get('io'));
+  logger.info('User deleted', { targetUserId: user.id, targetEmail: user.email, targetName: user.name, adminId: (req as any).user.id, ...req.logMeta });
   res.status(200).json({ status: "success", message: "Пользователь успешно удален" });
 });
 
@@ -135,13 +144,26 @@ export const toggleBlock = asyncHandler(async (req: Request, res: Response) => {
     await prisma.user.update({ where: { id: targetId }, data: { lockUntil: null, failedLoginAttempts: 0, currentSessionId: null } });
     message = 'Снята блокировка входа (брутфорс пароля)';
     newBlockedState = false;
+    logger.info('System login lock removed', { targetUserId: user.id, targetEmail: user.email, targetName: user.name, adminId: (req as any).user.id, ...req.logMeta });
   } else if (is2FALocked) {
     await prisma.user.update({ where: { id: targetId }, data: { twoFactorLockUntil: null, twoFactorAttempts: 0, currentSessionId: null } });
     message = 'Снята блокировка 2FA (брутфорс SMS)';
     newBlockedState = false;
+    logger.info('System 2FA lock removed', { targetUserId: user.id, targetEmail: user.email, targetName: user.name, adminId: (req as any).user.id, ...req.logMeta });
   } else {
     await prisma.user.update({ where: { id: targetId }, data: { isBlocked: newBlockedState, ...(newBlockedState && { currentSessionId: null }) } });
     message = newBlockedState ? 'Пользователь заблокирован вручную' : 'Ручная блокировка снята';
+    logger.info('User block status changed', {
+      targetUserId: user.id,
+      targetEmail: user.email,
+      targetName: user.name,
+      targetRole: user.role,
+      action: newBlockedState ? 'blocked' : 'unblocked',
+      adminId: (req as any).user.id,
+      adminEmail: (req as any).user.email,
+      adminName: (req as any).user.name,
+      ...req.logMeta
+    });
   }
 
   const io = req.app.get('io');
@@ -162,6 +184,7 @@ export const changeDefaultPassword = asyncHandler(async (req: any, res: Response
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(newPassword, salt);
   await prisma.user.update({ where: { id: req.user.id }, data: { password: hashedPassword, mustChangePassword: false } });
+  logger.info('User changed password', { userId: req.user.id, email: req.user.email, name: req.user.name, ...req.logMeta });
   res.json({ status: "success" });
 });
 
@@ -169,19 +192,3 @@ export const getAdminStats = asyncHandler(async (req: Request, res: Response) =>
   const stats = await fetchStatsInternal();
   res.status(200).json(stats);
 });
-
-export const emitUserLockStatus = (io: any, userId: number, updates: {
-  lockUntil?: Date | null;
-  failedLoginAttempts?: number;
-  twoFactorLockUntil?: Date | null;
-  twoFactorAttempts?: number;
-  isBlocked?: boolean;
-}) => {
-  if (!io) return;
-  io.to('admin_room').emit('user:blocked_status_changed', {
-    userId,
-    ...updates,
-    lockUntil: updates.lockUntil ? updates.lockUntil.toISOString() : null,
-    twoFactorLockUntil: updates.twoFactorLockUntil ? updates.twoFactorLockUntil.toISOString() : null,
-  });
-};
