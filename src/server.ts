@@ -6,6 +6,7 @@ import { config } from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
+import helmet from 'helmet';
 import { connectDB } from './config/db.js';
 import { prisma } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
@@ -13,6 +14,7 @@ import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import { fetchStatsInternal, setIoInstance, emitUserLockStatus } from './controllers/userController.js';
+import { errorHandler } from './middleware/errorHandler.js';
 
 config();
 connectDB();
@@ -20,12 +22,44 @@ connectDB();
 const app = express();
 const PORT = process.env.PORT || 5001;
 const HOST = process.env.HOST || '0.0.0.0';
+const isProduction = process.env.NODE_ENV === 'production';
+const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+const socketUrl = process.env.SOCKET_URL || 'http://localhost:5001';
+const apiUrl = process.env.VITE_API_URL || 'http://localhost:5001';
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim())
-  : ['http://localhost:5173'];
+  : [clientUrl];
 
 console.log(`🛡️ Allowed Origins: ${allowedOrigins.join(', ')}`);
+console.log(`🔒 Environment: ${process.env.NODE_ENV || 'development'}`);
+
+// --- HELMET с настройкой CSP ---
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          ...(isProduction ? [] : ["'unsafe-inline'", "'unsafe-eval'"]),
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: [
+          "'self'",
+          apiUrl,
+          socketUrl,
+          ...(isProduction ? [] : ['ws://localhost:5173', 'http://localhost:5173']),
+        ],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: isProduction ? [] : null,
+      },
+      reportOnly: !isProduction,
+    },
+  })
+);
 
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -130,6 +164,9 @@ app.use('/api/user', userRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/chat', chatLimiter, chatRoutes);
 
+// Глобальный обработчик ошибок (должен быть последним)
+app.use(errorHandler);
+
 // --- Socket.IO event handlers ---
 io.on('connection', (socket) => {
   const user = socket.data.user;
@@ -156,15 +193,12 @@ io.on('connection', (socket) => {
 
   // --- Обработка identify_user (уже авторизованы, но для совместимости) ---
   socket.on('identify_user', async ({ userId, userRole }) => {
-    // Можно просто проигнорировать, так как уже есть user в socket.data
     console.log(`[identify_user] received from ${userId} (${userRole}) but already authorized`);
-    // Убедимся, что админ/менеджер в admin_room (повторно)
     if (userRole === 'ADMIN' || userRole === 'MANAGER') {
       socket.join('admin_room');
       const stats = await fetchStatsInternal();
       socket.emit('stats_updated', stats);
     }
-    // Уведомляем админов о том, что этот пользователь онлайн (если он не админ)
     if (userRole !== 'ADMIN') {
       io.to('admin_room').emit('user:online', userId);
     }
@@ -183,9 +217,7 @@ io.on('connection', (socket) => {
     console.log(`🚪 User ${user.id} logged out intentionally`);
     socket.leave(`user_${user.id}`);
     socket.leave('admin_room');
-    // Уведомить админов, что пользователь офлайн
     io.to('admin_room').emit('user:offline', user.id);
-    // Пересчитать статистику и разослать админам
     const stats = await fetchStatsInternal();
     io.to('admin_room').emit('stats_updated', stats);
   });
@@ -206,13 +238,11 @@ io.on('connection', (socket) => {
   // --- Отключение (закрытие вкладки) ---
   socket.on('disconnect', async (reason) => {
     console.log(`🔴 Disconnected: ${socket.id}, user ${user.id}, reason: ${reason}`);
-    // Задержка, чтобы не сработало при перезагрузке страницы
     setTimeout(async () => {
       const activeSockets = await io.fetchSockets();
       const stillConnected = activeSockets.some(s => s.data.user?.id === user.id);
       if (!stillConnected) {
         console.log(`📡 User ${user.id} is now fully offline`);
-        // Уведомить админов о полном офлайне (если пользователь не админ)
         if (user.role !== 'ADMIN') {
           io.to('admin_room').emit('user:offline', user.id);
         }

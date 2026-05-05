@@ -65,8 +65,8 @@ export const authMiddleware = async (
     const lastSeen = new Date(user.lastSeen);
     const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
     
-    const LIMIT_USER = 1;
-    const LIMIT_OTHERS = 120;
+    const LIMIT_USER = 1;      // 1 минута (для демо, при необходимости изменить)
+    const LIMIT_OTHERS = 120;  // 2 часа
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 
     if (diffMinutes > limit) {
@@ -76,11 +76,14 @@ export const authMiddleware = async (
       });
     }
 
-    // 🔄 ОБНОВЛЕНИЕ АКТИВНОСТИ
-    await prisma.user.update({
-      where: { id: userId },
-      data: { lastSeen: new Date() }
-    }).catch(err => console.error("lastSeen update failed:", err));
+    // 🔄 ОБНОВЛЕНИЕ АКТИВНОСТИ (только если прошло более 60 секунд)
+    const secondsSinceLastSeen = (now.getTime() - lastSeen.getTime()) / 1000;
+    if (secondsSinceLastSeen > 60) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { lastSeen: now }
+      }).catch(err => console.error("lastSeen update failed:", err));
+    }
 
     req.user = user;
     next();
