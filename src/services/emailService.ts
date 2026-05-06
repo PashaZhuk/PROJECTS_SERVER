@@ -55,7 +55,7 @@ export const sendEmail = async ({ to, subject, html }: SendMailOptions) => {
 export const generateWelcomeEmail = (name: string, email: string, tempPassword: string, loginUrl: string) => {
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
-      <h2 style="color: #333; text-align: center;">Добро пожаловать в IPMATIKA B2B!</h2>
+      <h2 style="color: #333; text-align: center;">Добро пожаловать в IPMATIKA Bel B2B!</h2>
       <p>Здравствуйте, <strong>${name}</strong>!</p>
       <p>Ваш аккаунт был успешно создан. Ниже ваши данные для входа:</p>
       
@@ -83,7 +83,7 @@ export const generateResetPasswordEmail = (resetLink: string) => {
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
       <h2 style="color: #333; text-align: center;">Восстановление доступа</h2>
-      <p>Вы получили это письмо, потому что запросили сброс пароля для вашего аккаунта в IPMATIKA B2B.</p>
+      <p>Вы получили это письмо, потому что запросили сброс пароля для вашего аккаунта в IPMATIKA Bel B2B.</p>
       
       <p>Нажмите на кнопку ниже, чтобы установить новый пароль:</p>
       
@@ -95,7 +95,7 @@ export const generateResetPasswordEmail = (resetLink: string) => {
       <p>Ссылка действительна в течение <strong>1 часа</strong>.</p>
 
       <hr style="margin-top: 30px; border: 0; border-top: 1px solid #eee;">
-      <p style="font-size: 12px; color: #888; text-align: center;">© 2026 IPMATIKA B2B. Все права защищены.</p>
+      <p style="font-size: 12px; color: #888; text-align: center;">© 2026 IPMATIKA Bel B2B. Все права защищены.</p>
     </div>
   `;
 };

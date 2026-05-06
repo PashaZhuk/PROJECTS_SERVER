@@ -23,7 +23,7 @@ const check2FALock = (user: any) => {
 const sendWelcomeEmailToUser = async (email: string, name: string, plainPassword: string) => {
   const loginUrl = process.env.CLIENT_URL || 'http://localhost:5173/login';
   const html = generateWelcomeEmail(name, email, plainPassword, loginUrl);
-  await sendEmail({ to: email, subject: 'Добро пожаловать в IPMATICA Hub!', html });
+  await sendEmail({ to: email, subject: 'Добро пожаловать в IPMATIKA Bel B2B!', html });
 };
 
 export const registerUser = async (
@@ -41,40 +41,75 @@ export const registerUser = async (
   const { name, email, password, role, unp, companyName, phone } = data;
   const finalName = name ? name.trim() : companyName ? companyName.trim() : 'Партнер';
 
-  const userExist = await prisma.user.findUnique({ where: { email } });
-  if (userExist) throw new AppError(400, 'Пользователь с таким Email уже существует');
+  // 1. Email уникальность
+  const existingEmail = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+  if (existingEmail) {
+    throw new AppError(400, 'Пользователь с таким Email уже зарегистрирован');
+  }
 
+  // Для роли USER дополнительные проверки и уникальность полей
   if (role === 'USER') {
-    const cleanUnp = unp!.toString().trim();
-    const cleanCompanyName = companyName!.trim();
-    const partnerConflict = await prisma.user.findFirst({
-      where: { OR: [{ unp: cleanUnp }, { companyName: { equals: cleanCompanyName, mode: 'insensitive' } }] },
+    if (!companyName || !companyName.trim()) {
+      throw new AppError(400, 'Название компании обязательно');
+    }
+    if (!unp || !unp.toString().trim()) {
+      throw new AppError(400, 'УНП обязателен');
+    }
+    if (!phone || !phone.trim()) {
+      throw new AppError(400, 'Телефон обязателен');
+    }
+
+    const cleanUnp = unp.toString().trim();
+    const cleanCompanyName = companyName.trim();
+    const cleanPhone = phone.trim();
+
+    // УНП уникален
+    const existingUnp = await prisma.user.findUnique({ where: { unp: cleanUnp } });
+    if (existingUnp) {
+      throw new AppError(400, `Партнер с УНП ${cleanUnp} уже зарегистрирован`);
+    }
+
+    // Название компании уникально (регистронезависимо)
+    const existingCompany = await prisma.user.findFirst({
+      where: { companyName: { equals: cleanCompanyName, mode: 'insensitive' } }
     });
-    if (partnerConflict) {
-      const isUnpMatch = partnerConflict.unp === cleanUnp;
-      throw new AppError(
-        400,
-        isUnpMatch ? `Партнер с УНП ${cleanUnp} уже зарегистрирован` : `Компания "${cleanCompanyName}" уже существует`
-      );
+    if (existingCompany) {
+      throw new AppError(400, `Компания "${cleanCompanyName}" уже зарегистрирована`);
+    }
+
+    // Телефон уникален
+    const existingPhone = await prisma.user.findUnique({ where: { phone: cleanPhone } });
+    if (existingPhone) {
+      throw new AppError(400, `Телефон ${cleanPhone} уже используется`);
     }
   }
 
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(password, salt);
 
-  const user = await prisma.user.create({
-    data: {
-      name: finalName,
-      email: email.toLowerCase().trim(),
-      password: hashedPassword,
-      role: role || 'USER',
-      phone: role === 'USER' ? (phone || null) : null,
-      unp: role === 'USER' ? (unp ? unp.toString().trim() : null) : null,
-      companyName: role === 'USER' ? (companyName ? companyName.trim() : null) : null,
-      mustChangePassword: true,
-      twoFactorVerified: false,
-    },
-  });
+  // Формируем данные для создания
+  const createData: any = {
+    name: finalName,
+    email: email.toLowerCase().trim(),
+    password: hashedPassword,
+    role: role || 'USER',
+    mustChangePassword: true,
+    twoFactorVerified: false,
+  };
+
+  if (role === 'USER') {
+    // После проверок эти поля гарантированно есть, используем ! для уверенности TS
+    createData.phone = phone!.trim();
+    createData.unp = unp!.toString().trim();
+    createData.companyName = companyName!.trim();
+  } else {
+    // Для MANAGER не передаём лишние поля (или передаём null)
+    createData.phone = undefined;
+    createData.unp = null;
+    createData.companyName = null;
+  }
+
+  const user = await prisma.user.create({ data: createData });
 
   await sendWelcomeEmailToUser(user.email, user.name, password);
   logger.info('User registered', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
@@ -148,7 +183,7 @@ export const loginUser = async (
     data: { currentSessionId: sessionId, lastSeen: new Date(), twoFactorVerified: false },
   });
   await emitStatsUpdate();
-  if (io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
+  if (io && user.role !== 'USER') io.to('admin_room').emit('user:online', user.id);
   logger.info('User logged in', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
   return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token };
 };
@@ -261,7 +296,7 @@ export const forgotPasswordService = async (email: string, logMeta?: any) => {
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
   const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
   const html = generateResetPasswordEmail(resetLink);
-  await sendEmail({ to: user.email, subject: 'Сброс пароля IPMATICA Hub', html });
+  await sendEmail({ to: user.email, subject: 'Сброс пароля IPMATIKA Bel B2B', html });
   logger.info('Password reset requested', { userId: user.id, email: user.email, name: user.name, ...logMeta });
 };
 
