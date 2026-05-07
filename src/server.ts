@@ -15,6 +15,7 @@ import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import companyRoutes from './routes/companyRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import logger from './utils/logger.js';
 import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
@@ -96,6 +97,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/chat', chatLimiter, chatRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/companies', companyRoutes);
 app.use(errorHandler);
 
 // HTTP & Socket.IO

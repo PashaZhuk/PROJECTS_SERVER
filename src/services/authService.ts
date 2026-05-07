@@ -39,55 +39,35 @@ export const registerUser = async (
   logMeta?: any
 ) => {
   const { name, email, password, role, unp, companyName, phone } = data;
-  const finalName = name ? name.trim() : companyName ? companyName.trim() : 'Партнер';
+  const finalName = role === 'MANAGER' && name ? name.trim() : (name?.trim() || null);
 
-  // 1. Email уникальность
   const existingEmail = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
-  if (existingEmail) {
-    throw new AppError(400, 'Пользователь с таким Email уже зарегистрирован');
-  }
+  if (existingEmail) throw new AppError(400, 'Пользователь с таким Email уже зарегистрирован');
 
-  // Для роли USER дополнительные проверки и уникальность полей
   if (role === 'USER') {
-    if (!companyName || !companyName.trim()) {
-      throw new AppError(400, 'Название компании обязательно');
-    }
-    if (!unp || !unp.toString().trim()) {
-      throw new AppError(400, 'УНП обязателен');
-    }
-    if (!phone || !phone.trim()) {
-      throw new AppError(400, 'Телефон обязателен');
-    }
+    if (!companyName || !companyName.trim()) throw new AppError(400, 'Название компании обязательно');
+    if (!unp || !unp.toString().trim()) throw new AppError(400, 'УНП обязателен');
+    if (!phone || !phone.trim()) throw new AppError(400, 'Телефон обязателен');
 
     const cleanUnp = unp.toString().trim();
     const cleanCompanyName = companyName.trim();
     const cleanPhone = phone.trim();
 
-    // УНП уникален
     const existingUnp = await prisma.user.findUnique({ where: { unp: cleanUnp } });
-    if (existingUnp) {
-      throw new AppError(400, `Партнер с УНП ${cleanUnp} уже зарегистрирован`);
-    }
+    if (existingUnp) throw new AppError(400, `Партнер с УНП ${cleanUnp} уже зарегистрирован`);
 
-    // Название компании уникально (регистронезависимо)
     const existingCompany = await prisma.user.findFirst({
       where: { companyName: { equals: cleanCompanyName, mode: 'insensitive' } }
     });
-    if (existingCompany) {
-      throw new AppError(400, `Компания "${cleanCompanyName}" уже зарегистрирована`);
-    }
+    if (existingCompany) throw new AppError(400, `Компания "${cleanCompanyName}" уже зарегистрирована`);
 
-    // Телефон уникален
     const existingPhone = await prisma.user.findUnique({ where: { phone: cleanPhone } });
-    if (existingPhone) {
-      throw new AppError(400, `Телефон ${cleanPhone} уже используется`);
-    }
+    if (existingPhone) throw new AppError(400, `Телефон ${cleanPhone} уже используется`);
   }
 
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(password, salt);
 
-  // Формируем данные для создания
   const createData: any = {
     name: finalName,
     email: email.toLowerCase().trim(),
@@ -98,21 +78,18 @@ export const registerUser = async (
   };
 
   if (role === 'USER') {
-    // После проверок эти поля гарантированно есть, используем ! для уверенности TS
     createData.phone = phone!.trim();
     createData.unp = unp!.toString().trim();
     createData.companyName = companyName!.trim();
   } else {
-    // Для MANAGER не передаём лишние поля (или передаём null)
     createData.phone = undefined;
     createData.unp = null;
     createData.companyName = null;
   }
 
   const user = await prisma.user.create({ data: createData });
-
-  await sendWelcomeEmailToUser(user.email, user.name, password);
-  logger.info('User registered', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
+  await sendWelcomeEmailToUser(user.email, user.name || user.companyName || 'Партнер', password);
+  logger.info('User registered', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, role: user.role, ...logMeta });
   return user;
 };
 
@@ -123,21 +100,34 @@ export const loginUser = async (
   logMeta?: any
 ) => {
   const user = await prisma.user.findUnique({ where: { email } });
+  const enrichLogMeta = (extra?: any) => {
+    if (!user) return { ...logMeta, ...extra };
+    return {
+      ...logMeta,
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      companyName: user.companyName,
+      displayName: user.companyName || user.name || `User ${user.id}`,
+      role: user.role,
+      ...extra,
+    };
+  };
 
   if (user && user.isBlocked) {
-    logger.warn('Login blocked (admin block)', { email, userId: user.id, name: user.name, role: user.role, ...logMeta });
+    logger.warn('Login blocked (admin block)', enrichLogMeta());
     return { success: false, userBlocked: true };
   }
 
   if (user && user.lockUntil && user.lockUntil > new Date()) {
     const timeLeft = Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000);
-    logger.warn('Login blocked (password lock)', { email, userId: user.id, name: user.name, role: user.role, timeLeft, ...logMeta });
+    logger.warn('Login blocked (password lock)', enrichLogMeta({ timeLeft }));
     return { success: false, lockType: 'password', timeLeft };
   }
 
   if (user && user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
     const timeLeft = Math.ceil((user.twoFactorLockUntil.getTime() - Date.now()) / 1000);
-    logger.warn('Login blocked (2FA lock)', { email, userId: user.id, name: user.name, role: user.role, timeLeft, ...logMeta });
+    logger.warn('Login blocked (2FA lock)', enrichLogMeta({ timeLeft }));
     return { success: false, lockType: '2FA', timeLeft };
   }
 
@@ -148,16 +138,16 @@ export const loginUser = async (
         const lockTime = new Date(Date.now() + 15 * 60 * 1000);
         await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: newAttempts, lockUntil: lockTime } });
         emitUserLockStatus(user.id, { lockUntil: lockTime, failedLoginAttempts: newAttempts });
-        logger.warn('Password lock activated', { userId: user.id, email, name: user.name, role: user.role, attempts: newAttempts, ...logMeta });
+        logger.warn('Password lock activated', enrichLogMeta({ attempts: newAttempts, lockTime }));
         return { success: false, lockType: 'password', timeLeft: 15 * 60 };
       }
       await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: newAttempts } });
       emitUserLockStatus(user.id, { failedLoginAttempts: newAttempts });
       const attemptsLeft = 5 - newAttempts;
-      logger.warn('Failed login attempt', { email, userId: user.id, name: user.name, role: user.role, attemptsLeft, ...logMeta });
+      logger.warn('Failed login attempt', enrichLogMeta({ attemptsLeft }));
       return { success: false, attemptsLeft };
     }
-    logger.warn('Failed login attempt (user not found)', { email, ...logMeta });
+    logger.warn('Failed login attempt (user not found)', enrichLogMeta());
     return { success: false, attemptsLeft: 4 };
   }
 
@@ -168,7 +158,7 @@ export const loginUser = async (
 
   const requires2FA = user.role === 'USER';
   if (requires2FA) {
-    logger.info('2FA required', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
+    logger.info('2FA required', enrichLogMeta());
     return { success: false, requires2FA: true, userId: user.id, email: user.email };
   }
 
@@ -176,7 +166,7 @@ export const loginUser = async (
   const io = getIo();
   if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
     io.to(`user_${user.id}`).emit('session_superseded');
-    logger.info('Session superseded', { userId: user.id, name: user.name, role: user.role, ...logMeta });
+    logger.info('Session superseded', enrichLogMeta());
   }
   await prisma.user.update({
     where: { id: user.id },
@@ -184,17 +174,27 @@ export const loginUser = async (
   });
   await emitStatsUpdate();
   if (io && user.role !== 'USER') io.to('admin_room').emit('user:online', user.id);
-  logger.info('User logged in', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
+  logger.info('User logged in', enrichLogMeta());
   return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token };
 };
 
 export const send2FACodeService = async (userId: number, logMeta?: any) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
+  const enrichLogMeta = (extra?: any) => ({
+    ...logMeta,
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    companyName: user.companyName,
+    displayName: user.companyName || user.name || `User ${user.id}`,
+    role: user.role,
+    ...extra,
+  });
 
   const lockStatus = check2FALock(user);
   if (lockStatus.locked) {
-    logger.warn('2FA code request blocked (lock)', { userId, email: user.email, name: user.name, timeLeft: lockStatus.timeLeft, ...logMeta });
+    logger.warn('2FA code request blocked (lock)', enrichLogMeta({ timeLeft: lockStatus.timeLeft }));
     throw new AppError(429, `Слишком много неудачных попыток. Попробуйте позже. (${lockStatus.timeLeft} сек.)`);
   }
 
@@ -202,13 +202,13 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
     const timePassed = Date.now() - user.twoFactorCodeSentAt.getTime();
     if (timePassed < CODE_RESEND_DELAY_MS) {
       const waitTime = Math.ceil((CODE_RESEND_DELAY_MS - timePassed) / 1000);
-      logger.warn('2FA code request too frequent', { userId, email: user.email, waitTime, ...logMeta });
+      logger.warn('2FA code request too frequent', enrichLogMeta({ waitTime }));
       throw new AppError(429, `Код можно запросить повторно через ${waitTime} сек.`);
     }
   }
 
   await prisma.user.update({ where: { id: user.id }, data: { twoFactorCodeSentAt: new Date() } });
-  logger.info('2FA code sent', { userId: user.id, email: user.email, name: user.name, ...logMeta });
+  logger.info('2FA code sent', enrichLogMeta());
   console.log(`🔐 2FA CODE for ${user.email}: ${HARDCODED_2FA_CODE}`);
   return { debugCode: HARDCODED_2FA_CODE };
 };
@@ -216,9 +216,20 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
 export const verify2FACodeService = async (userId: number, code: string, res: any, logMeta?: any) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
+  const enrichLogMeta = (extra?: any) => ({
+    ...logMeta,
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    companyName: user.companyName,
+    displayName: user.companyName || user.name || `User ${user.id}`,
+    role: user.role,
+    ...extra,
+  });
 
   const lockStatus = check2FALock(user);
   if (lockStatus.locked) {
+    logger.warn('2FA verify blocked (lock)', enrichLogMeta({ timeLeft: lockStatus.timeLeft }));
     return { success: false, locked: true, timeLeft: lockStatus.timeLeft };
   }
 
@@ -231,7 +242,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
         data: { twoFactorAttempts: newAttempts, twoFactorLockUntil: lockTime },
       });
       emitUserLockStatus(user.id, { twoFactorLockUntil: lockTime, twoFactorAttempts: newAttempts });
-      logger.warn('2FA lock activated', { userId: user.id, email: user.email, name: user.name, attempts: newAttempts, ...logMeta });
+      logger.warn('2FA lock activated', enrichLogMeta({ attempts: newAttempts, lockTime }));
       return { success: false, locked: true, timeLeft: LOCK_DURATION_MS / 1000 };
     }
     await prisma.user.update({
@@ -240,7 +251,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
     });
     emitUserLockStatus(user.id, { twoFactorAttempts: newAttempts });
     const attemptsLeft = MAX_2FA_ATTEMPTS - newAttempts;
-    logger.warn('Invalid 2FA code', { userId: user.id, email: user.email, name: user.name, attemptsLeft, ...logMeta });
+    logger.warn('Invalid 2FA code', enrichLogMeta({ attemptsLeft }));
     return { success: false, attemptsLeft };
   }
 
@@ -248,7 +259,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   const io = getIo();
   if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
     io.to(`user_${user.id}`).emit('session_superseded');
-    logger.info('Session superseded after 2FA', { userId: user.id, name: user.name, role: user.role, ...logMeta });
+    logger.info('Session superseded after 2FA', enrichLogMeta());
   }
   await prisma.user.update({
     where: { id: user.id },
@@ -263,7 +274,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   emitUserLockStatus(user.id, { twoFactorLockUntil: null, twoFactorAttempts: 0 });
   await emitStatsUpdate();
   if (io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
-  logger.info('2FA verification successful', { userId: user.id, email: user.email, name: user.name, role: user.role, ...logMeta });
+  logger.info('2FA verification successful', enrichLogMeta());
   return {
     success: true,
     user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
@@ -297,7 +308,7 @@ export const forgotPasswordService = async (email: string, logMeta?: any) => {
   const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
   const html = generateResetPasswordEmail(resetLink);
   await sendEmail({ to: user.email, subject: 'Сброс пароля IPMATIKA Bel B2B', html });
-  logger.info('Password reset requested', { userId: user.id, email: user.email, name: user.name, ...logMeta });
+  logger.info('Password reset requested', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };
 
 export const resetPasswordService = async (token: string, newPassword: string, logMeta?: any) => {
@@ -311,5 +322,5 @@ export const resetPasswordService = async (token: string, newPassword: string, l
     where: { id: user.id },
     data: { password: hashedPassword, resetPasswordToken: null, resetPasswordExpires: null, mustChangePassword: false },
   });
-  logger.info('Password reset successfully', { userId: user.id, email: user.email, name: user.name, ...logMeta });
+  logger.info('Password reset successfully', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };

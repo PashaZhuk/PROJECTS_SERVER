@@ -44,7 +44,6 @@ export const authMiddleware = async (
       return res.status(401).json({ error: "User no longer exists" });
     }
 
-    // 🚫 ПРОВЕРКА БЛОКИРОВКИ
     if (user.isBlocked) {
       return res.status(403).json({
         error: "Ваш аккаунт заблокирован. Обратитесь к администратору.",
@@ -52,7 +51,6 @@ export const authMiddleware = async (
       });
     }
 
-    // 🔐 ПРОВЕРКА ВЫТЕСНЕНИЯ СЕССИИ
     if (decoded.sessionId && user.currentSessionId !== decoded.sessionId) {
       return res.status(401).json({ 
         error: "Сессия завершена из-за входа с другого устройства",
@@ -60,13 +58,12 @@ export const authMiddleware = async (
       });
     }
 
-    // ⏳ ПРОВЕРКА ТАЙМАУТА НЕАКТИВНОСТИ
     const now = new Date();
     const lastSeen = new Date(user.lastSeen);
     const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
     
-    const LIMIT_USER = 1;      // 1 минута (для демо, при необходимости изменить)
-    const LIMIT_OTHERS = 120;  // 2 часа
+    const LIMIT_USER = 1;
+    const LIMIT_OTHERS = 120;
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 
     if (diffMinutes > limit) {
@@ -76,7 +73,6 @@ export const authMiddleware = async (
       });
     }
 
-    // 🔄 ОБНОВЛЕНИЕ АКТИВНОСТИ (только если прошло более 60 секунд)
     const secondsSinceLastSeen = (now.getTime() - lastSeen.getTime()) / 1000;
     if (secondsSinceLastSeen > 60) {
       await prisma.user.update({
@@ -84,6 +80,17 @@ export const authMiddleware = async (
         data: { lastSeen: now }
       }).catch(err => console.error("lastSeen update failed:", err));
     }
+
+    // Добавляем информацию о пользователе в logMeta
+    req.logMeta = {
+      ...(req.logMeta || {}),
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      companyName: user.companyName,
+      displayName: user.companyName || user.name || `Пользователь ${user.id}`,
+      role: user.role,
+    };
 
     req.user = user;
     next();
