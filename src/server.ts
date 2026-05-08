@@ -16,6 +16,7 @@ import projectRoutes from './routes/projectRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import companyRoutes from './routes/companyRoutes.js';
+import managerRoutes from './routes/managerRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import logger from './utils/logger.js';
 import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
@@ -84,7 +85,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser());
 
@@ -98,6 +99,7 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/chat', chatLimiter, chatRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api/manager', managerRoutes);
 app.use(errorHandler);
 
 // HTTP & Socket.IO
