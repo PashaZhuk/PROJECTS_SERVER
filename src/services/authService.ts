@@ -175,7 +175,7 @@ export const loginUser = async (
   await emitStatsUpdate();
   if (io && user.role !== 'USER') io.to('admin_room').emit('user:online', user.id);
   logger.info('User logged in', enrichLogMeta());
-  return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword }, token };
+  return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName }, token };
 };
 
 export const send2FACodeService = async (userId: number, logMeta?: any) => {
@@ -277,7 +277,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   logger.info('2FA verification successful', enrichLogMeta());
   return {
     success: true,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword },
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName },
     token,
   };
 };
