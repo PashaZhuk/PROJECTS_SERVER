@@ -87,6 +87,22 @@ model User {
   projects           Project[] @relation("PartnerProjects")
   processedProjects  Project[] @relation("ManagerAction")
   messages           Message[]
+  refreshTokens      RefreshToken[]
+}
+
+model RefreshToken {
+  id              Int       @id @default(autoincrement())
+  tokenHash       String    @unique @db.VarChar(64)      // SHA-256 хеш refresh токена
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId       String?   @db.VarChar(36)               // UUID сессии
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+  replacedByHash  String?   @db.VarChar(64)               // ссылка на новый токен при ротации
+
+  @@index([userId])
+  @@index([sessionId])
 }
 
 model Project {

@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '../config/db.js';
-import { generateToken } from '../utils/generateToken.js';
+import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generateAccessToken, setAccessTokenCookie } from '../utils/generateToken.js';
 import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from './emailService.js';
 import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
@@ -162,7 +162,8 @@ export const loginUser = async (
     return { success: false, requires2FA: true, userId: user.id, email: user.email };
   }
 
-  const { token, sessionId } = generateToken(String(user.id), res);
+  const sessionId = uuidv4();
+  const { accessToken } = await generateTokens(user.id, sessionId, res);
   const io = getIo();
   if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
     io.to(`user_${user.id}`).emit('session_superseded');
@@ -175,7 +176,7 @@ export const loginUser = async (
   await emitStatsUpdate();
   if (io && user.role !== 'USER') io.to('admin_room').emit('user:online', user.id);
   logger.info('User logged in', enrichLogMeta());
-  return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName }, token };
+  return { success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName }, token: accessToken };
 };
 
 export const send2FACodeService = async (userId: number, logMeta?: any) => {
@@ -255,7 +256,8 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
     return { success: false, attemptsLeft };
   }
 
-  const { token, sessionId } = generateToken(String(user.id), res);
+  const sessionId = uuidv4();
+  const { accessToken } = await generateTokens(user.id, sessionId, res);
   const io = getIo();
   if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
     io.to(`user_${user.id}`).emit('session_superseded');
@@ -278,13 +280,19 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   return {
     success: true,
     user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName },
-    token,
+    token: accessToken,
   };
 };
 
-export const logoutUser = async (userId: number | undefined, logMeta?: any) => {
+export const logoutUser = async (userId: number | undefined, res?: any, logMeta?: any) => {
   if (userId) {
     const oldDate = new Date(Date.now() - 10 * 60 * 1000);
+
+    // Отзываем refresh токены пользователя
+    await revokeUserRefreshTokens(userId).catch(err =>
+      logger.error('Failed to revoke refresh tokens', { userId, error: err.message })
+    );
+
     await prisma.user.update({ where: { id: userId }, data: { lastSeen: oldDate, currentSessionId: null, twoFactorVerified: false } });
     const io = getIo();
     if (io) {
@@ -293,6 +301,8 @@ export const logoutUser = async (userId: number | undefined, logMeta?: any) => {
     }
     logger.info('User logged out', { userId, ...logMeta });
   }
+  // Чистим refresh cookie в любом случае
+  if (res) clearRefreshCookie(res);
 };
 
 export const forgotPasswordService = async (email: string, logMeta?: any) => {

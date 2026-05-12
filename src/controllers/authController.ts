@@ -10,6 +10,7 @@ import {
 } from '../services/authService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { AppError } from '../utils/AppError.js';
+import { rotateRefreshToken, clearRefreshCookie } from '../utils/generateToken.js';
 
 export const register = asyncHandler(async (req: any, res: Response) => {
   const user = await registerUser(req.body, req.logMeta);
@@ -53,7 +54,7 @@ export const verify2FACode = asyncHandler(async (req: any, res: Response) => {
 
 export const logout = asyncHandler(async (req: any, res: Response) => {
   const userId = req.user?.id;
-  await logoutUser(userId, req.logMeta);
+  await logoutUser(userId, res, req.logMeta);
   res.clearCookie('jwt', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/' });
   res.status(200).json({ status: 'success' });
 });
@@ -75,4 +76,22 @@ export const resetPassword = asyncHandler(async (req: any, res: Response) => {
   const { token, newPassword } = req.body;
   await resetPasswordService(token, newPassword, req.logMeta);
   res.json({ status: 'success', message: 'Пароль успешно изменен' });
+});
+
+export const refresh = asyncHandler(async (req: any, res: Response) => {
+  const rawToken = req.cookies?.refreshToken;
+  const result = await rotateRefreshToken(rawToken, res);
+
+  if (!result.success) {
+    res.clearCookie('jwt', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/' });
+    return res.status(401).json({ error: result.error });
+  }
+
+  res.json({
+    status: 'success',
+    data: {
+      user: result.user,
+      token: result.accessToken,
+    },
+  });
 });
