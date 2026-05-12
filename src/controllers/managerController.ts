@@ -21,16 +21,7 @@ export const getPartners = asyncHandler(async (req: Request, res: Response) => {
 
 export const sendBroadcast = asyncHandler(async (req: Request, res: Response) => {
   const { recipientIds, subject, message, attachments } = req.body;
-
-  if (!recipientIds || !Array.isArray(recipientIds) || recipientIds.length === 0) {
-    res.status(400).json({ error: 'Не выбраны получатели' });
-    return;
-  }
-
-  if (!subject || !message) {
-    res.status(400).json({ error: 'Тема и сообщение обязательны' });
-    return;
-  }
+  // Данные уже провалидированы broadcastSchema в middleware
 
   const recipients = await prisma.user.findMany({
     where: {

@@ -50,6 +50,45 @@ export const twoFAVerifySchema = z.object({
 });
 
 // ----------------------
+// BROADCAST SCHEMA (доведение информации)
+// ----------------------
+
+const ALLOWED_BROADCAST_EXTENSIONS = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png', '.txt'];
+const MAX_TOTAL_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB (лимит Yandex SMTP)
+
+const broadcastAttachmentSchema = z.object({
+  filename: z.string().min(1, 'Имя файла не может быть пустым'),
+  content: z.string().min(1, 'Содержимое файла пустое'),
+  encoding: z.string().optional(),
+}).refine(
+  (att) => {
+    const ext = '.' + (att.filename.split('.').pop()?.toLowerCase() || '');
+    return ALLOWED_BROADCAST_EXTENSIONS.includes(ext);
+  },
+  { message: `Недопустимый тип файла. Разрешены: ${ALLOWED_BROADCAST_EXTENSIONS.join(', ')}` }
+);
+
+export const broadcastSchema = z.object({
+  recipientIds: z.array(z.number().int().positive()).min(1, 'Выберите хотя бы одного получателя'),
+  subject: z.string().min(1, 'Тема обязательна').max(255, 'Тема не может быть длиннее 255 символов'),
+  message: z.string().min(1, 'Текст сообщения обязателен').max(50000, 'Сообщение не может быть длиннее 50 000 символов'),
+  attachments: z.array(broadcastAttachmentSchema).optional(),
+}).superRefine((data, ctx) => {
+  if (data.attachments && data.attachments.length > 0) {
+    const totalSize = data.attachments.reduce((sum, att) => {
+      return sum + Math.ceil(att.content.length * 3 / 4);
+    }, 0);
+    if (totalSize > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: `Общий размер вложений превышает 25 MB`,
+      });
+    }
+  }
+});
+
+// ----------------------
 // PROJECT SCHEMAS
 // ----------------------
 
