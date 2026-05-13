@@ -119,6 +119,29 @@ async function main() {
   console.log('   Менеджер: manager@test.com / manager');
   console.log('   15 партнёров: partner1@test.com ... partner15@test.com, пароль 1111');
   console.log('   10 компаний-примеров в справочнике');
+
+  // Настройки портала
+  console.log('⚙️ Создание настроек портала...');
+  await prisma.siteSetting.upsert({
+    where: { key: 'contacts' },
+    create: {
+      key: 'contacts',
+      value: {
+        companyName: 'ООО "АйПиМатика Бел"',
+        city: 'г. Минск',
+        address: '220081, Минская обл., Минский р-н, Боровлянский с/с, д. Копище, ул. Лопатина, д. 6, пом. 3',
+        phone: '+375(17) 361-96-96',
+        mobile: '+375(29) 361-96-96',
+        email: 'info@ipmatika.by',
+        supportEmail: 'support@ipmatika.by',
+        supportPhone: '+375(29) 378-96-96',
+        workingHours: 'понедельник-четверг — 9:00-18:00, пятница — 9:00-17:00',
+        yandexMapId: '85112499592fc9fcb766262465c1b80ca62edb09cd1f5b1caa6045fc3a6fc2e0',
+      },
+    },
+    update: {},
+  });
+  console.log('✅ Настройки портала созданы');
 }
 
 main()
