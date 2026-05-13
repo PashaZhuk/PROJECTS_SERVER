@@ -9,7 +9,7 @@ services:
     environment:
       # Эти данные создадут администратора и базу при первом запуске
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: 3619696ipm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-3619696ipm}
       POSTGRES_DB: b2b_portal
     ports:
       - "5432:5432"
