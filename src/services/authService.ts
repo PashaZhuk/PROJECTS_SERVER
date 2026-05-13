@@ -148,7 +148,7 @@ export const loginUser = async (
       return { success: false, attemptsLeft };
     }
     logger.warn('Failed login attempt (user not found)', enrichLogMeta());
-    return { success: false, attemptsLeft: 4 };
+    return { success: false };
   }
 
   if (user.failedLoginAttempts > 0 || user.lockUntil) {
