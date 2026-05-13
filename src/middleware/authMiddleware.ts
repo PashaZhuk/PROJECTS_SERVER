@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/db.js';
+import { sendError } from '../utils/response.js';
 
 interface JwtPayload {
   id: string;
@@ -25,7 +26,7 @@ export const authMiddleware = async (
   }
 
   if (!token) {
-    return res.status(401).json({ error: "Not authorized, no token provided" });
+    return sendError(res, 401, "Not authorized, no token provided");
   }
 
   try {
@@ -33,29 +34,33 @@ export const authMiddleware = async (
     const userId = Number(decoded.id);
 
     if (isNaN(userId)) {
-      return res.status(401).json({ error: "Invalid user ID format" });
+      return sendError(res, 401, "Invalid user ID format");
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        companyName: true,
+        isBlocked: true,
+        currentSessionId: true,
+        lastSeen: true,
+      }
     });
 
     if (!user) {
-      return res.status(401).json({ error: "User no longer exists" });
+      return sendError(res, 401, "User no longer exists");
     }
 
     if (user.isBlocked) {
-      return res.status(403).json({
-        error: "Ваш аккаунт заблокирован. Обратитесь к администратору.",
-        code: "USER_BLOCKED"
-      });
+      return sendError(res, 403, "Ваш аккаунт заблокирован. Обратитесь к администратору.", { code: "USER_BLOCKED" });
     }
 
     if (decoded.sessionId && user.currentSessionId !== decoded.sessionId) {
-      return res.status(401).json({ 
-        error: "Сессия завершена из-за входа с другого устройства",
-        code: "SESSION_SUPERSEDED" 
-      });
+      return sendError(res, 401, "Сессия завершена из-за входа с другого устройства", { code: "SESSION_SUPERSEDED" });
     }
 
     const now = new Date();
@@ -67,10 +72,7 @@ export const authMiddleware = async (
     const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 
     if (diffMinutes > limit) {
-      return res.status(401).json({ 
-        error: "Сессия истекла из-за неактивности",
-        code: "SESSION_EXPIRED" 
-      });
+      return sendError(res, 401, "Сессия истекла из-за неактивности", { code: "SESSION_EXPIRED" });
     }
 
     const secondsSinceLastSeen = (now.getTime() - lastSeen.getTime()) / 1000;
@@ -96,6 +98,6 @@ export const authMiddleware = async (
     next();
   } catch (err: any) {
     console.error("[Auth] Token verification failed:", err.message);
-    return res.status(401).json({ error: "Not authorized, token failed" });
+    return sendError(res, 401, "Not authorized, token failed");
   }
 };

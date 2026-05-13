@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Request, Response, NextFunction } from 'express';
+import { sendError } from './response.js';
 
 // ----------------------
 // USER / AUTH SCHEMAS
@@ -129,7 +130,7 @@ export const validate = (schema: z.ZodObject<any, any> | z.ZodEffects<any>) => {
           path: issue.path.join('.'),
           message: issue.message,
         }));
-        return res.status(400).json({ status: 'error', message: 'Ошибка валидации данных', errors });
+        return sendError(res, 400, 'Ошибка валидации данных', { errors });
       }
       next(error);
     }

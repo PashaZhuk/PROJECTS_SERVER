@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import { AppError } from '../utils/AppError';
 import logger from '../utils/logger';
+import { sendError } from '../utils/response';
 
 export const errorHandler = (
   err: Error | AppError | ZodError,
@@ -43,9 +44,5 @@ export const errorHandler = (
     logger.error(`[UnhandledError] ${err.message}`, { ...logMeta, stack: err.stack });
   }
 
-  res.status(statusCode).json({
-    status: 'error',
-    message,
-    ...(details && { details }),
-  });
+  sendError(res, statusCode, message, details ? { errors: details } : undefined);
 };

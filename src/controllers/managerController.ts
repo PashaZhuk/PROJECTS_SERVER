@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { prisma } from '../config/db.js';
 import { sendEmail } from '../services/emailService.js';
+import { sendSuccess, sendError } from '../utils/response.js';
 
 export const getPartners = asyncHandler(async (req: Request, res: Response) => {
   const partners = await prisma.user.findMany({
@@ -16,7 +17,7 @@ export const getPartners = asyncHandler(async (req: Request, res: Response) => {
     orderBy: { companyName: 'asc' },
   });
 
-  res.json({ success: true, data: partners });
+  sendSuccess(res, partners);
 });
 
 export const sendBroadcast = asyncHandler(async (req: Request, res: Response) => {
@@ -32,39 +33,38 @@ export const sendBroadcast = asyncHandler(async (req: Request, res: Response) =>
   });
 
   if (recipients.length === 0) {
-    res.status(400).json({ error: 'Нет получателей с email' });
+    sendError(res, 400, 'Нет получателей с email');
     return;
   }
 
   let sent = 0;
   const failed: Array<{ id: number; email: string; error: string }> = [];
 
-  for (const recipient of recipients) {
-    try {
-      await sendEmail({
-        to: recipient.email!,
-        subject,
-        html: message,
-        attachments: attachments
-          ? attachments.map((att: any) => ({
-              filename: att.filename,
-              content: att.content,
-              encoding: att.encoding || 'base64',
-            }))
-          : undefined,
-      });
-      sent++;
-    } catch (err: any) {
-      failed.push({ id: recipient.id, email: recipient.email!, error: err.message });
-    }
-  }
+  const results = await Promise.allSettled(
+    recipients.map(async (recipient) => {
+      try {
+        await sendEmail({
+          to: recipient.email!,
+          subject,
+          html: message,
+          attachments: attachments
+            ? attachments.map((att: any) => ({
+                filename: att.filename,
+                content: att.content,
+                encoding: att.encoding || 'base64',
+              }))
+            : undefined,
+        });
+        sent++;
+      } catch (err: any) {
+        failed.push({ id: recipient.id, email: recipient.email!, error: err.message });
+      }
+    })
+  );
 
-  res.json({
-    success: true,
-    data: {
-      sent,
-      failed: failed.length,
-      failedDetails: failed.length > 0 ? failed : undefined,
-    },
+  sendSuccess(res, {
+    sent,
+    failed: failed.length,
+    failedDetails: failed.length > 0 ? failed : undefined,
   });
 });
