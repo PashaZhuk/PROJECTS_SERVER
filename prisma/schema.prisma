@@ -157,3 +157,20 @@ model Message {
   senderId   Int
   sender     User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
 }
+
+model TestEquipment {
+  id              Int      @id @default(autoincrement())
+  category        String   // ВКС, IP ТЕЛЕФОНЫ, Сетевое оборудование и т.д.
+  name            String   // Наименование
+  accountingType  String?  // Учёт: МС, ОС, MAC адрес, вне учета
+  purpose         String?  // Предназначение
+  serialNumber    String?  // Серийный номер
+  macAddress      String?  // MAC адрес
+  issueDate       String?  // Дата выдачи
+  issuedTo        String?  // Кому выдано (партнёр)
+  issuedToWhere   String?  // Куда выдано
+  status          String   @default("in_stock") // in_stock | issued | sold | repair | decommissioned
+  comments        String?  // Комментарии
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

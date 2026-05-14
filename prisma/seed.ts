@@ -142,6 +142,47 @@ async function main() {
     update: {},
   });
   console.log('✅ Настройки портала созданы');
+
+  // ─── Тестовое оборудование ───
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE "TestEquipment" RESTART IDENTITY CASCADE;`);
+
+  const equipmentData = [
+    { category: 'ВКС', name: 'UVC86 Video Conferencing Camera', accountingType: 'MAC адрес', serialNumber: '806009E090000277', macAddress: '805EC06E6D66' },
+    { category: 'ВКС', name: 'UVC85-BYOD-200 система для видеоконференций', accountingType: 'MAC адрес', serialNumber: '806017G060000390', macAddress: 'UVC85' },
+    { category: 'ВКС', name: 'WF50', accountingType: 'вне учета', serialNumber: '8402720074001460', macAddress: 'нет' },
+    { category: 'ВКС', name: 'BYOD-BOX', accountingType: 'МС', serialNumber: '800004C110000636', macAddress: 'нет' },
+    { category: 'ВКС', name: 'Mspeaker II', accountingType: 'MAC адрес', serialNumber: '806051D070001418', macAddress: '805EC066F98C' },
+    { category: 'ВКС', name: 'VCH51', accountingType: 'MAC адрес', serialNumber: '803016E120101329', macAddress: 'нет' },
+    { category: 'ВКС', name: 'VCM35 (настольный микрофонный массив)', accountingType: 'MAC адрес', serialNumber: '111083H100000138' },
+    { category: 'ВКС', name: 'WPP30 (беспроводной передатчик контента)', accountingType: 'MAC адрес', serialNumber: '803112F020001311', macAddress: 'нет' },
+    { category: 'ВКС', name: 'CM20', accountingType: 'MAC адрес', serialNumber: '203095G050000399', macAddress: '44DBD24009AF' },
+    { category: 'ВКС', name: 'CS10', accountingType: 'MAC адрес', serialNumber: '803094G050003162', macAddress: '249AD8B31057' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'VP59', accountingType: 'МС', serialNumber: '803050C030000181', macAddress: '805EC0AFD1F6' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T43U', accountingType: 'МС', serialNumber: '2008SN23537', macAddress: '805EC0CFBCB3' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'W59R', accountingType: 'МС', serialNumber: '802006C092401007', macAddress: 'нет' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'CP965 Conferencing phone', accountingType: 'MAC адрес', serialNumber: '804014G012400010', macAddress: '249AD8E4728D' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'W73P', accountingType: 'MAC адрес', serialNumber: '2206SN08635', macAddress: '805E0CE8F609' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T31G', accountingType: 'MAC адрес', serialNumber: '2209SN13678' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T31W', accountingType: 'MAC адрес', serialNumber: '2309SN00229', macAddress: '44DBD2217C16' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T34W', accountingType: 'MAC адрес', serialNumber: '2309SN00962', macAddress: '44DBD221ECE5' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T44W', accountingType: 'MAC адрес', serialNumber: '2404SN61923', macAddress: '44DBD25297A9' },
+    { category: 'IP ТЕЛЕФОНЫ', name: 'SIP-T58W Pro with camera', accountingType: 'MAC адрес', serialNumber: '801606D090701420', macAddress: '805E0CEF5D49' },
+    { category: 'Сетевое оборудование', name: 'P3010M-8PoE-150W', accountingType: 'МС' },
+    { category: 'Сетевое оборудование', name: 'P1009D-8PoE-120W', accountingType: 'МС' },
+    { category: 'Сетевое оборудование', name: 'P1009D-8PoE-96W', accountingType: 'МС', serialNumber: 'SWI025TG170162' },
+    { category: 'Сетевое оборудование', name: 'WI-POE31', accountingType: 'МС' },
+    { category: 'Сетевое оборудование', name: 'WI-PS308G', accountingType: 'МС', serialNumber: 'PS308GV22210RU001' },
+    { category: 'IP АТС', name: 'Сервер для программной АТС', accountingType: 'МС' },
+    { category: 'IP шлюзы', name: 'TA1600', accountingType: 'МС' },
+    { category: 'IP шлюзы', name: 'TA1610', accountingType: 'МС' },
+    { category: 'Прочее', name: 'Удлиннитель сетевой 220В - 50 метров', accountingType: 'вне учета' },
+    { category: 'Прочее', name: 'Буклетница', accountingType: 'вне учета' },
+  ];
+
+  for (const item of equipmentData) {
+    await prisma.testEquipment.create({ data: item });
+  }
+  console.log(`✅ Загружено ${equipmentData.length} единиц оборудования`);
 }
 
 main()

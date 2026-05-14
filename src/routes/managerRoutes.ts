@@ -4,12 +4,29 @@ import { authMiddleware } from '../middleware/authMiddleware.js';
 import { managerMiddleware } from '../middleware/managerMiddleware.js';
 import { validate, broadcastSchema } from '../utils/validationSchemas.js';
 import { getPartners, sendBroadcast } from '../controllers/managerController.js';
+import {
+  listEquipment,
+  getEquipment,
+  addEquipment,
+  editEquipment,
+  removeEquipment,
+  listCategories,
+} from '../controllers/equipmentController.js';
 
 const router = Router();
 
 router.use(authMiddleware, managerMiddleware);
 
+// Broadcast
 router.get('/partners', getPartners);
 router.post('/send-broadcast', express.json({ limit: '50mb' }), validate(broadcastSchema), sendBroadcast);
+
+// Equipment
+router.get('/equipment', listEquipment);
+router.get('/equipment/categories', listCategories);
+router.get('/equipment/:id', getEquipment);
+router.post('/equipment', addEquipment);
+router.put('/equipment/:id', editEquipment);
+router.delete('/equipment/:id', removeEquipment);
 
 export default router;
