@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import multer from 'multer';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import {
@@ -7,6 +8,7 @@ import {
   getBackupPath,
   deleteBackup,
   restoreBackup,
+  uploadMiddleware,
   getSchedule,
   setSchedule,
   stopSchedule,
@@ -21,6 +23,27 @@ export const createBackupHandler = asyncHandler(async (_req: Request, res: Respo
   } else {
     sendError(res, 500, result.error || 'Ошибка создания бэкапа');
   }
+});
+
+/** POST /api/admin/backup/upload — загрузить .sql файл */
+export const uploadBackupHandler = asyncHandler(async (req: Request, res: Response) => {
+  uploadMiddleware(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        sendError(res, 413, 'Файл слишком большой (максимум 500 MB)');
+      } else {
+        sendError(res, 400, err.message || 'Ошибка загрузки файла');
+      }
+      return;
+    }
+
+    if (!req.file) {
+      sendError(res, 400, 'Файл не выбран');
+      return;
+    }
+
+    sendSuccess(res, { filename: req.file.filename }, 'Файл загружен');
+  });
 });
 
 /** GET /api/admin/backup/list — список бэкапов */

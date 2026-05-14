@@ -1,6 +1,7 @@
 import { exec, execSync, spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import multer from 'multer';
 import cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import logger from '../utils/logger.js';
@@ -11,6 +12,31 @@ const BACKUP_DIR = path.join(process.cwd(), 'backups');
 const CONTAINER_NAME = 'projects_postgres_18';
 const DB_NAME = 'b2b_portal';
 const DB_USER = 'admin';
+
+// ─── Multer (загрузка файлов) ───
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    fs.mkdir(BACKUP_DIR, { recursive: true }).then(() => cb(null, BACKUP_DIR));
+  },
+  filename: (_req, file, cb) => {
+    // Сохраняем с оригинальным именем, но проверяем расширение
+    const name = file.originalname.endsWith('.sql') ? file.originalname : `${file.originalname}.sql`;
+    cb(null, name);
+  },
+});
+
+export const uploadMiddleware = multer({
+  storage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+  fileFilter: (_req, file, cb) => {
+    if (!file.originalname.endsWith('.sql')) {
+      cb(new Error('Только .sql файлы'));
+      return;
+    }
+    cb(null, true);
+  },
+}).single('backup');
 
 // ─── Состояние планировщика ───
 
