@@ -183,3 +183,23 @@ model News {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model BroadcastLog {
+  id        Int      @id @default(autoincrement())
+  subject   String
+  message   String
+  recipients Int     @default(0)
+  status    String   @default("sent")
+  sentAt    DateTime @default(now())
+  sentBy    Int?
+}
+
+model EventLog {
+  id          Int      @id @default(autoincrement())
+  action      String
+  description String
+  entityType  String?
+  entityId    Int?
+  userId      Int?
+  createdAt   DateTime @default(now())
+}
