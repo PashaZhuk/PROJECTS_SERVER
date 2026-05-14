@@ -125,8 +125,13 @@ export const updateProjectStatus = async (id: number, status: string, userId: nu
     await emitStatsUpdate();
   }
   logger.info('Project status changed', { projectId: id, oldStatus, newStatus: status, userId, ...logMeta });
+  const statusLabels: Record<string, string> = {
+    PENDING: 'На проверке', IN_PROGRESS: 'В работе', APPROVED: 'Одобрен',
+    REJECTED: 'Отклонён', REVISION: 'На доработке', CLOSED: 'Закрыт',
+  };
   logEvent({
-    action: 'status_changed', description: `Проект #${id}: ${oldStatus} → ${validStatus} (${updatedProject.partner?.companyName || updatedProject.partner?.name || ''})`,
+    action: 'status_changed',
+    description: `Проект #${id}: ${statusLabels[oldStatus] || oldStatus} → ${statusLabels[validStatus] || validStatus} (${updatedProject.partner?.companyName || updatedProject.partner?.name || ''})`,
     entityType: 'project', entityId: id, userId,
   });
   return updatedProject;
