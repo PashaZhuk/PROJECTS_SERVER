@@ -152,6 +152,13 @@ async function main() {
     await prisma.testEquipment.create({ data: item });
   }
   console.log(`✅ Загружено ${EQUIPMENT_SEED_DATA.length} единиц оборудования`);
+
+  // ─── Демо-новости ───
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE "News" RESTART IDENTITY CASCADE;`);
+
+  await prisma.news.create({ data: { title: 'Новая прошивка Yealink V86', link: 'https://yealink.com', imageUrl: null } });
+  await prisma.news.create({ data: { title: 'Обновление прайс-листа', link: 'https://google.com', imageUrl: null } });
+  console.log('✅ Добавлено 2 демо-новости');
 }
 
 main()
