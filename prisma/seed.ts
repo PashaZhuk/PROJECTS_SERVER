@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Role, ProjectStatus } from '../generated/prisma/client';
 import bcrypt from 'bcrypt';
 import { prisma } from '../src/config/db';
