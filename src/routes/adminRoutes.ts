@@ -17,6 +17,7 @@ import {
   listBackupsHandler,
   downloadBackupHandler,
   deleteBackupHandler,
+  restoreBackupHandler,
   getScheduleHandler,
   setScheduleHandler,
 } from '../controllers/backupController';
@@ -39,6 +40,7 @@ router.post('/backup/create', createBackupHandler);
 router.get('/backup/list', listBackupsHandler);
 router.get('/backup/download/:filename', downloadBackupHandler);
 router.delete('/backup/:filename', deleteBackupHandler);
+router.post('/backup/restore/:filename', restoreBackupHandler);
 router.get('/backup/schedule', getScheduleHandler);
 router.put('/backup/schedule', setScheduleHandler);
 

@@ -1,4 +1,4 @@
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import cron from 'node-cron';
@@ -74,49 +74,126 @@ export async function createBackup(): Promise<{ success: boolean; filename?: str
   return new Promise((resolve) => {
     const cmd = `docker exec ${CONTAINER_NAME} pg_dump -U ${DB_USER} -d ${DB_NAME} --clean --if-exists`;
 
-    const proc = exec(cmd, {
+    exec(cmd, {
       timeout: 120_000, // 2 минуты на бэкап
       maxBuffer: 500 * 1024 * 1024, // 500MB
-    });
-
-    const chunks: Buffer[] = [];
-
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-
-    proc.stderr?.on('data', (data: Buffer) => {
-      const msg = data.toString();
-      // pg_dump пишет предупреждения в stderr — не всё из них ошибки
-      logger.info(`[pg_dump stderr] ${msg.trim()}`);
-    });
-
-    proc.on('error', (err) => {
-      logger.error(`[backup] spawn error: ${err.message}`);
-      resolve({ success: false, error: `Ошибка запуска pg_dump: ${err.message}` });
-    });
-
-    proc.on('close', async (code) => {
-      if (code !== 0) {
-        logger.error(`[backup] pg_dump exited with code ${code}`);
-        resolve({ success: false, error: `pg_dump завершился с кодом ${code}` });
+    }, async (error, stdout, stderr) => {
+      if (error) {
+        const msg = error.message || '';
+        logger.error(`[backup] exec error: ${msg}`);
+        // pg_dump может писать предупреждения в stderr, но это не ошибка
+        if (stderr) logger.info(`[pg_dump stderr] ${stderr.trim().slice(0, 500)}`);
+        resolve({ success: false, error: `Ошибка pg_dump: ${msg}` });
         return;
       }
 
+      if (stderr) {
+        // pg_dump пишет предупреждения/прогресс в stderr — логируем, не считаем ошибкой
+        logger.info(`[pg_dump stderr] ${stderr.trim().slice(0, 500)}`);
+      }
+
       try {
-        const sql = Buffer.concat(chunks);
-        if (sql.length === 0) {
+        if (!stdout || stdout.trim().length === 0) {
           resolve({ success: false, error: 'Бэкап пуст — база данных не содержит данных?' });
           return;
         }
-        await fs.writeFile(filepath, sql, 'utf-8');
-        logger.info(`[backup] saved: ${filename} (${(sql.length / 1024 / 1024).toFixed(1)} MB)`);
+        await fs.writeFile(filepath, stdout, 'utf-8');
+        const sizeMB = (Buffer.byteLength(stdout, 'utf-8') / 1024 / 1024).toFixed(1);
+        logger.info(`[backup] saved: ${filename} (${sizeMB} MB)`);
         resolve({ success: true, filename });
       } catch (err: any) {
         logger.error(`[backup] write error: ${err.message}`);
         resolve({ success: false, error: `Ошибка записи файла: ${err.message}` });
       }
     });
+  });
+}
+
+// ─── Восстановление из бэкапа ───
+
+export async function restoreBackup(filename: string): Promise<{ success: boolean; error?: string }> {
+  await ensureBackupDir();
+
+  // Защита от directory traversal
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return { success: false, error: 'Некорректное имя файла' };
+  }
+
+  const filepath = path.join(BACKUP_DIR, filename);
+
+  // Проверяем, существует ли файл
+  try {
+    await fs.access(filepath);
+  } catch {
+    return { success: false, error: 'Файл бэкапа не найден' };
+  }
+
+  const dockerOk = await checkDockerAvailable();
+  if (!dockerOk) {
+    return { success: false, error: 'Docker не найден. Убедитесь, что Docker Desktop запущен.' };
+  }
+
+  const containerOk = await checkContainerRunning();
+  if (!containerOk) {
+    return { success: false, error: `Контейнер ${CONTAINER_NAME} не запущен.` };
+  }
+
+  return new Promise(async (resolve) => {
+    try {
+      const sqlContent = await fs.readFile(filepath, 'utf-8');
+
+      if (!sqlContent || sqlContent.trim().length === 0) {
+        resolve({ success: false, error: 'Файл бэкапа пуст' });
+        return;
+      }
+
+      const proc = spawn('docker', [
+        'exec', '-i', CONTAINER_NAME,
+        'psql', '-U', DB_USER, '-d', DB_NAME,
+      ], {
+        timeout: 300_000, // 5 минут на восстановление
+      });
+
+      let errorOutput = '';
+
+      proc.stdout?.on('data', (data: Buffer) => {
+        const msg = data.toString().trim();
+        if (msg) logger.info(`[restore stdout] ${msg.slice(0, 300)}`);
+      });
+
+      proc.stderr?.on('data', (data: Buffer) => {
+        const msg = data.toString().trim();
+        if (msg) {
+          errorOutput += msg + '\n';
+          logger.info(`[restore stderr] ${msg.slice(0, 300)}`);
+        }
+      });
+
+      // Пишем SQL в stdin процесса
+      proc.stdin.write(sqlContent);
+      proc.stdin.end();
+
+      proc.on('error', (err) => {
+        logger.error(`[restore] spawn error: ${err.message}`);
+        resolve({ success: false, error: `Ошибка запуска psql: ${err.message}` });
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          logger.info(`[restore] success: ${filename}`);
+          resolve({ success: true });
+        } else {
+          // NOTICE и другие информационные сообщения psql пишет в stderr — 
+          // это не всегда ошибка. Но если exit code != 0, значит реальная проблема.
+          logger.error(`[restore] psql exited with code ${code}`);
+          const brief = errorOutput.slice(0, 500).trim();
+          resolve({ success: false, error: `psql завершился с кодом ${code}${brief ? ': ' + brief : ''}` });
+        }
+      });
+    } catch (err: any) {
+      logger.error(`[restore] error: ${err.message}`);
+      resolve({ success: false, error: `Ошибка восстановления: ${err.message}` });
+    }
   });
 }
 

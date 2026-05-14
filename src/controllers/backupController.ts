@@ -6,6 +6,7 @@ import {
   listBackups,
   getBackupPath,
   deleteBackup,
+  restoreBackup,
   getSchedule,
   setSchedule,
   stopSchedule,
@@ -64,6 +65,23 @@ export const deleteBackupHandler = asyncHandler(async (req: Request, res: Respon
     sendSuccess(res, undefined, 'Бэкап удалён');
   } else {
     sendError(res, 404, 'Файл не найден');
+  }
+});
+
+/** POST /api/admin/backup/restore/:filename — восстановить БД из бэкапа */
+export const restoreBackupHandler = asyncHandler(async (req: Request, res: Response) => {
+  const filename = req.params.filename;
+
+  if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    sendError(res, 400, 'Некорректное имя файла');
+    return;
+  }
+
+  const result = await restoreBackup(filename);
+  if (result.success) {
+    sendSuccess(res, undefined, 'База данных восстановлена из бэкапа');
+  } else {
+    sendError(res, 500, result.error || 'Ошибка восстановления');
   }
 });
 
