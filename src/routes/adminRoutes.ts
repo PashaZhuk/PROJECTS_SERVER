@@ -12,6 +12,14 @@ import {
   readTable,
   updateRow,
 } from '../controllers/dbController';
+import {
+  createBackupHandler,
+  listBackupsHandler,
+  downloadBackupHandler,
+  deleteBackupHandler,
+  getScheduleHandler,
+  setScheduleHandler,
+} from '../controllers/backupController';
 
 const router = Router();
 
@@ -25,5 +33,13 @@ router.put('/settings/:key', updateSetting);
 router.get('/db/tables', listTables);
 router.get('/db/tables/:tableName', readTable);
 router.put('/db/tables/:tableName/:id', updateRow);
+
+// Backup
+router.post('/backup/create', createBackupHandler);
+router.get('/backup/list', listBackupsHandler);
+router.get('/backup/download/:filename', downloadBackupHandler);
+router.delete('/backup/:filename', deleteBackupHandler);
+router.get('/backup/schedule', getScheduleHandler);
+router.put('/backup/schedule', setScheduleHandler);
 
 export default router;
