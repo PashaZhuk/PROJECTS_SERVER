@@ -3,6 +3,7 @@ import { ProjectStatus } from '../../generated/prisma/enums.js';
 import { emitStatsUpdate, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
+import { logEvent } from './eventLogService.js';
 
 export const createProject = async (data: any, userId: number, logMeta?: any) => {
   const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = data;
@@ -124,5 +125,9 @@ export const updateProjectStatus = async (id: number, status: string, userId: nu
     await emitStatsUpdate();
   }
   logger.info('Project status changed', { projectId: id, oldStatus, newStatus: status, userId, ...logMeta });
+  logEvent({
+    action: 'status_changed', description: `Проект #${id}: ${oldStatus} → ${validStatus} (${updatedProject.partner?.companyName || updatedProject.partner?.name || ''})`,
+    entityType: 'project', entityId: id, userId,
+  });
   return updatedProject;
 };
