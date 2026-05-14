@@ -1,7 +1,7 @@
 import { prisma } from '../config/db.js';
 
 // ─── Только эти таблицы доступны для просмотра/редактирования ───
-const ALLOWED_TABLES = ['Company', 'User', 'Project', 'SiteSetting', 'Message'];
+const ALLOWED_TABLES = ['Company', 'User', 'Project', 'Message'];
 
 // ─── Read-only поля (автоматические, не подлежат ручной правке) ───
 const READ_ONLY_FIELDS: Record<string, string[]> = {
