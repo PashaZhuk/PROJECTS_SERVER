@@ -12,6 +12,7 @@ import {
   removeEquipment,
   listCategories,
 } from '../controllers/equipmentController.js';
+import { listNews, addNews, removeNews } from '../controllers/newsController.js';
 
 const router = Router();
 
@@ -28,5 +29,10 @@ router.get('/equipment/:id', getEquipment);
 router.post('/equipment', addEquipment);
 router.put('/equipment/:id', editEquipment);
 router.delete('/equipment/:id', removeEquipment);
+
+// News
+router.get('/news', listNews);
+router.post('/news', addNews);
+router.delete('/news/:id', removeNews);
 
 export default router;

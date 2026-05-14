@@ -18,6 +18,7 @@ import adminRoutes from './routes/adminRoutes.js';
 import companyRoutes from './routes/companyRoutes.js';
 import managerRoutes from './routes/managerRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
+import newsRoutes from './routes/newsRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import logger from './utils/logger.js';
 import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
@@ -102,6 +103,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/manager', managerRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/news', newsRoutes);
 app.use(errorHandler);
 
 // HTTP & Socket.IO
