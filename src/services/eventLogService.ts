@@ -1,7 +1,13 @@
 import { prisma } from '../config/db.js';
 
 export async function getEventLog(limit = 100) {
-  return prisma.eventLog.findMany({ orderBy: { createdAt: 'desc' }, take: limit });
+  return prisma.eventLog.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    include: {
+      user: { select: { name: true, companyName: true, email: true } },
+    },
+  });
 }
 
 export async function logEvent(data: {

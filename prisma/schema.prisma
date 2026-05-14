@@ -88,6 +88,7 @@ model User {
   processedProjects  Project[] @relation("ManagerAction")
   messages           Message[]
   refreshTokens      RefreshToken[]
+  eventLogs          EventLog[]
 }
 
 model RefreshToken {
@@ -201,5 +202,6 @@ model EventLog {
   entityType  String?
   entityId    Int?
   userId      Int?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
 }
