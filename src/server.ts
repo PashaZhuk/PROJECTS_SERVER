@@ -104,6 +104,18 @@ app.use('/api/companies', companyRoutes);
 app.use('/api/manager', managerRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/news', newsRoutes);
+
+// Swagger UI — только в development
+if (process.env.NODE_ENV !== 'production') {
+  const swaggerUi = (await import('swagger-ui-express')).default
+  const { swaggerSpec } = await import('./config/swagger.js')
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'B2B Portal API',
+  }))
+  console.log('📖 Swagger UI: /api-docs')
+}
+
 app.use(errorHandler);
 
 // HTTP & Socket.IO
