@@ -11,20 +11,32 @@ export const getIo = () => globalIo;
 
 export const getOnlineUsersFromSockets = () => {
   const io = getIo();
-  if (!io) return { onlineUsers: 0, onlineManagers: 0 };
+  if (!io) return { onlineUsers: 0, onlineManagers: 0, onlineUserNames: [] as string[], onlineManagerNames: [] as string[] };
   const uniqueUsers = new Set<number>();
   const uniqueManagers = new Set<number>();
+  const userNames: string[] = [];
+  const managerNames: string[] = [];
   const sockets = io.sockets.sockets;
   sockets.forEach((socket: any) => {
     const userId = socket.data?.userId;
     const userRole = socket.data?.userRole;
+    const displayName = socket.data?.user?.companyName || socket.data?.user?.name || '';
     if (userId) {
       if (userRole === 'ADMIN') return;
-      if (userRole === 'MANAGER') uniqueManagers.add(userId);
-      else if (userRole === 'USER') uniqueUsers.add(userId);
+      if (userRole === 'MANAGER') {
+        if (!uniqueManagers.has(userId)) {
+          uniqueManagers.add(userId);
+          if (displayName) managerNames.push(displayName);
+        }
+      } else if (userRole === 'USER') {
+        if (!uniqueUsers.has(userId)) {
+          uniqueUsers.add(userId);
+          if (displayName) userNames.push(displayName);
+        }
+      }
     }
   });
-  return { onlineUsers: uniqueUsers.size, onlineManagers: uniqueManagers.size };
+  return { onlineUsers: uniqueUsers.size, onlineManagers: uniqueManagers.size, onlineUserNames: userNames, onlineManagerNames: managerNames };
 };
 
 export const fetchStatsInternal = async () => {

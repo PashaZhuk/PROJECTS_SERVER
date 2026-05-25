@@ -139,12 +139,12 @@ io.use(async (socket, next) => {
     if (isNaN(userId)) return next(new Error('Invalid user ID in token'));
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, role: true, isBlocked: true, currentSessionId: true, name: true }
+      select: { id: true, role: true, isBlocked: true, currentSessionId: true, name: true, companyName: true }
     });
     if (!user) return next(new Error('User not found'));
     if (user.isBlocked) return next(new Error('User is blocked'));
     if (user.currentSessionId && user.currentSessionId !== decoded.sessionId) return next(new Error('Session superseded'));
-    socket.data.user = { id: user.id, role: user.role, name: user.name };
+    socket.data.user = { id: user.id, role: user.role, name: user.name, companyName: user.companyName };
     socket.data.userId = user.id;
     socket.data.userRole = user.role;
     next();
