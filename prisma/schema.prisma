@@ -81,7 +81,12 @@ model User {
   twoFactorLockUntil  DateTime?
   
   // Время последней отправки кода (для лимита 1 раз в 60 сек)
-  twoFactorCodeSentAt DateTime? 
+  twoFactorCodeSentAt DateTime?
+
+  // Хеш 6-значного кода 2FA (для проверки без хранения plaintext)
+  twoFactorCodeHash   String?   @db.VarChar(64)
+  // Срок действия кода (5 минут)
+  twoFactorCodeExpiresAt DateTime?
 
   // Связи
   projects           Project[] @relation("PartnerProjects")

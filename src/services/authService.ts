@@ -4,13 +4,14 @@ import { prisma } from '../config/db.js';
 import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generateAccessToken, setAccessTokenCookie } from '../utils/generateToken.js';
 import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from './emailService.js';
 import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
+import { sendSms } from './smsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 
 const MAX_2FA_ATTEMPTS = 3;
 const LOCK_DURATION_MS = 15 * 60 * 1000;
 const CODE_RESEND_DELAY_MS = 60 * 1000;
-const HARDCODED_2FA_CODE = '111111';
+const CODE_EXPIRY_MS = 5 * 60 * 1000; // 5 минут
 
 const check2FALock = (user: any) => {
   if (user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
@@ -208,10 +209,48 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
     }
   }
 
-  await prisma.user.update({ where: { id: user.id }, data: { twoFactorCodeSentAt: new Date() } });
-  logger.info('2FA code sent', enrichLogMeta());
-  console.log(`🔐 2FA CODE for ${user.email}: ${HARDCODED_2FA_CODE}`);
-  return { debugCode: HARDCODED_2FA_CODE };
+  // Генерируем 6-значный код
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const codeHash = await bcrypt.hash(code, 6);
+  const expiresAt = new Date(Date.now() + CODE_EXPIRY_MS);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      twoFactorCodeHash: codeHash,
+      twoFactorCodeExpiresAt: expiresAt,
+      twoFactorCodeSentAt: new Date(),
+    },
+  });
+
+  // Отправляем SMS
+  const phone = user.phone;
+  if (!phone) {
+    logger.error('У пользователя нет номера телефона для 2FA', enrichLogMeta());
+    // Для дебага всё равно показываем код в консоли
+    console.log(`🔐 2FA CODE for ${user.email}: ${code} (нет телефона)`);
+    return { debugCode: code };
+  }
+
+  const smsResult = await sendSms(phone, `IPMATIKA: код подтверждения ${code}`);
+
+  if (!smsResult.success) {
+    logger.error('Не удалось отправить SMS с 2FA кодом', enrichLogMeta({
+      smsError: smsResult.error?.description,
+      phone: phone.replace(/\d{4}$/, '****'),
+    }));
+    console.log(`🔐 2FA CODE for ${user.email}: ${code} (SMS не отправлено: ${smsResult.error?.description})`);
+    return { debugCode: code };
+  }
+
+  logger.info('2FA code sent via SMS', enrichLogMeta({
+    messageId: smsResult.messageId,
+    phone: phone.replace(/\d{4}$/, '****'),
+    expiresAt,
+  }));
+  // В debug-режиме возвращаем код для консоли
+  console.log(`🔐 2FA CODE for ${user.email}: ${code} (SMS ID: ${smsResult.messageId})`);
+  return { debugCode: code };
 };
 
 export const verify2FACodeService = async (userId: number, code: string, res: any, logMeta?: any) => {
@@ -234,7 +273,26 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
     return { success: false, locked: true, timeLeft: lockStatus.timeLeft };
   }
 
-  if (code !== HARDCODED_2FA_CODE) {
+  // Проверяем, запрашивался ли код
+  if (!user.twoFactorCodeHash || !user.twoFactorCodeExpiresAt) {
+    logger.warn('2FA verify: код не запрашивался', enrichLogMeta());
+    return { success: false, attemptsLeft: MAX_2FA_ATTEMPTS };
+  }
+
+  // Проверяем срок действия
+  if (user.twoFactorCodeExpiresAt < new Date()) {
+    logger.warn('2FA verify: код истёк', enrichLogMeta());
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFactorCodeHash: null, twoFactorCodeExpiresAt: null },
+    });
+    return { success: false, message: 'Код истёк. Запросите новый.' };
+  }
+
+  // Сверяем код по хешу
+  const isValid = await bcrypt.compare(code, user.twoFactorCodeHash);
+
+  if (!isValid) {
     const newAttempts = (user.twoFactorAttempts || 0) + 1;
     if (newAttempts >= MAX_2FA_ATTEMPTS) {
       const lockTime = new Date(Date.now() + LOCK_DURATION_MS);
@@ -270,6 +328,8 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
       twoFactorAttempts: 0,
       twoFactorLockUntil: null,
       twoFactorVerified: true,
+      twoFactorCodeHash: null,
+      twoFactorCodeExpiresAt: null,
       lastSeen: new Date(),
     },
   });
