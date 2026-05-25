@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import {
   register, login, logout, getProfile,
   forgotPassword, resetPassword,
@@ -15,10 +16,15 @@ router.post('/register', authMiddleware, adminMiddleware, validate(registerSchem
 router.post('/login', validate(loginSchema), login);
 router.post('/logout', logout);
 router.get('/profile', authMiddleware, getProfile);
-router.post('/2fa/send', validate(twoFASendSchema), send2FACode);
-router.post('/2fa/verify', validate(twoFAVerifySchema), verify2FACode);
 router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 router.post('/refresh', refresh);
+
+// Rate limit для 2FA: 3 запроса/мин на отправку, 6 запросов/мин на проверку
+const twoFASendLimiter = rateLimit({ windowMs: 60 * 1000, max: 3, message: { success: false, error: 'Слишком много запросов кода. Подождите минуту.' } });
+const twoFAVerifyLimiter = rateLimit({ windowMs: 60 * 1000, max: 6, message: { success: false, error: 'Слишком много попыток ввода кода. Подождите минуту.' } });
+
+router.post('/2fa/send', twoFASendLimiter, validate(twoFASendSchema), send2FACode);
+router.post('/2fa/verify', twoFAVerifyLimiter, validate(twoFAVerifySchema), verify2FACode);
 
 export default router;
