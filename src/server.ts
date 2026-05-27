@@ -24,6 +24,10 @@ import logger from './utils/logger.js';
 import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
 
 config();
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled Rejection:', reason);
+  process.exit(1);
+});
 connectDB();
 
 const app = express();
@@ -216,6 +220,8 @@ io.on('connection', (socket) => {
   });
 });
 
+console.log('📡 Starting HTTP server...');
 httpServer.listen(Number(PORT), HOST, () => {
   console.log(`🚀 Server running on http://${HOST}:${PORT}`);
+  console.log(`✅ DB: ${process.env.DATABASE_URL ? 'configured' : 'missing'}`);
 });
