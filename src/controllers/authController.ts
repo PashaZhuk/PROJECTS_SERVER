@@ -7,6 +7,7 @@ import {
   logoutUser,
   forgotPasswordService,
   resetPasswordService,
+  changePasswordService,
 } from '../services/authService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { AppError } from '../utils/AppError.js';
@@ -88,4 +89,12 @@ export const refresh = asyncHandler(async (req: any, res: Response) => {
     user: result.user,
     token: result.accessToken,
   });
+});
+
+export const changePassword = asyncHandler(async (req: any, res: Response) => {
+  const { currentPassword, newPassword } = req.body;
+  const userId = req.user?.id;
+  if (!userId) throw new AppError(401, 'Не авторизован');
+  await changePasswordService(userId, currentPassword, newPassword, req.logMeta);
+  sendSuccess(res, undefined, 'Пароль успешно изменен');
 });

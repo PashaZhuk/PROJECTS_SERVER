@@ -394,3 +394,21 @@ export const resetPasswordService = async (token: string, newPassword: string, l
   });
   logger.info('Password reset successfully', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };
+
+export const changePasswordService = async (userId: number, currentPassword: string, newPassword: string, logMeta?: any) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new AppError(404, 'Пользователь не найден');
+  
+  const isMatch = await bcrypt.compare(currentPassword, user.password);
+  if (!isMatch) throw new AppError(400, 'Текущий пароль неверен');
+  
+  const salt = await bcrypt.genSalt(10);
+  const hashedPassword = await bcrypt.hash(newPassword, salt);
+  
+  await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword },
+  });
+  
+  logger.info('Password changed', { userId, email: user.email, ...logMeta });
+};

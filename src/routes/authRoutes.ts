@@ -4,7 +4,7 @@ import {
   register, login, logout, getProfile,
   forgotPassword, resetPassword,
   send2FACode, verify2FACode,
-  refresh,
+  refresh, changePassword,
 } from '../controllers/authController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
@@ -18,6 +18,7 @@ router.post('/logout', logout);
 router.get('/profile', authMiddleware, getProfile);
 router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
+router.post('/change-password', authMiddleware, changePassword);
 router.post('/refresh', refresh);
 
 // Rate limit для 2FA: 3 запроса/мин на отправку (app-level блокировка для verify)
