@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
-import { getLogs } from '../controllers/adminController';
+import { getLogs, downloadLogs } from '../controllers/adminController';
 import {
   getAllAdminSettings,
   getAdminSetting,
@@ -27,6 +27,7 @@ const router = Router();
 
 router.use(authMiddleware, adminMiddleware);
 router.get('/logs', getLogs);
+router.get('/logs/download', downloadLogs);
 router.get('/settings', getAllAdminSettings);
 router.get('/settings/:key', getAdminSetting);
 router.put('/settings/:key', updateSetting);

@@ -52,3 +52,45 @@ export const fetchLogs = async (level?: string, search?: string, limit?: number,
   const resultLogs = filtered.slice(0, Math.min(limit || MAX_LINES, MAX_LINES));
   return { logs: resultLogs, total: filtered.length, returned: resultLogs.length };
 };
+
+/**
+ * Собирает все логи за диапазон дат (включительно).
+ */
+export const fetchLogsRange = async (dateFrom: string, dateTo: string, level?: string): Promise<any[]> => {
+  const filesToRead: string[] = [];
+  const start = new Date(dateFrom);
+  const end = new Date(dateTo);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return [];
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const filePath = path.join(LOG_DIR, `combined-${dateStr}.log`);
+    try {
+      await fs.access(filePath);
+      filesToRead.push(filePath);
+    } catch {
+      // файла за эту дату нет — пропускаем
+    }
+  }
+
+  const allEntries: any[] = [];
+  for (const filePath of filesToRead) {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry && entry.timestamp && entry.level) allEntries.push(entry);
+        } catch {}
+      }
+    } catch {}
+  }
+
+  allEntries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  if (level && ['info', 'warn', 'error'].includes(level)) {
+    return allEntries.filter(entry => entry.level === level);
+  }
+  return allEntries;
+};
