@@ -7,6 +7,20 @@ export const getLogs = asyncHandler(async (req: any, res: any) => {
   const search = req.query.search as string;
   const limit = parseInt(req.query.limit as string) || 500;
   const date = req.query.date as string;
+  const dateFrom = req.query.dateFrom as string;
+  const dateTo = req.query.dateTo as string;
+
+  // Если передан диапазон — используем fetchLogsRange без лимита
+  if (dateFrom && dateTo) {
+    const logs = await fetchLogsRange(dateFrom, dateTo, level);
+    const filtered = search
+      ? logs.filter(entry => JSON.stringify(entry).toLowerCase().includes(search.toLowerCase()))
+      : logs;
+    const slice = filtered.slice(0, Math.min(limit, 2000));
+    sendSuccess(res, { logs: slice, total: filtered.length, returned: slice.length });
+    return;
+  }
+
   const result = await fetchLogs(level, search, limit, date);
   sendSuccess(res, result);
 });
