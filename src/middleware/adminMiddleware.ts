@@ -1,4 +1,5 @@
 import type { Response, NextFunction } from 'express';
+import { sendError } from '../utils/response.js';
 
 // Используем тот же интерфейс AuthRequest, что и в authMiddleware
 export const adminMiddleware = (req: any, res: Response, next: NextFunction) => {
@@ -7,8 +8,6 @@ export const adminMiddleware = (req: any, res: Response, next: NextFunction) => 
     next(); // Если админ, идем дальше к контроллеру
   } else {
     // Если не админ — возвращаем 403 Forbidden
-    res.status(403).json({ 
-      error: "Доступ запрещен. Требуются права администратора." 
-    });
+    sendError(res, 403, "Доступ запрещен. Требуются права администратора.");
   }
 };

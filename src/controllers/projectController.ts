@@ -1,212 +1,32 @@
-import { type Response } from 'express';
-import { prisma } from '../config/db.js';
-import { emitStatsUpdate } from '../utils/socketHelpers.js';
+import type { Response } from 'express';
+import {
+  createProject as createProjectService,
+  getProjects as getProjectsService,
+  updateProject as updateProjectService,
+  updateProjectStatus as updateProjectStatusService,
+} from '../services/projectService.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { sendSuccess } from '../utils/response.js';
 
-export const createProject = async (req: any, res: Response) => {
-  try {
-    const { 
-      formType, 
-      customerName, 
-      customerInn, 
-      purchaseMethod, 
-      executionDate, 
-      ...otherData 
-    } = req.body;
+export const createProject = asyncHandler(async (req: any, res: Response) => {
+  const newProject = await createProjectService(req.body, req.user.id, req.logMeta);
+  sendSuccess(res, { projectId: newProject.id }, 'Заявка успешно создана и передана на модерацию', 201);
+});
 
-    const existingProject = await prisma.project.findFirst({
-      where: { 
-        customerInn, 
-        status: { in: ['PENDING', 'APPROVED', 'IN_PROGRESS'] } 
-      }
-    });
+export const getProjects = asyncHandler(async (req: any, res: Response) => {
+  const result = await getProjectsService(req.user.id, req.user.role, req.query);
+  sendSuccess(res, result);
+});
 
-    if (existingProject) {
-      return res.status(400).json({ 
-        error: "Проект с данным УНП заказчика уже зарегистрирован и находится в обработке." 
-      });
-    }
+export const updateProject = asyncHandler(async (req: any, res: Response) => {
+  const { id } = req.params;
+  const updatedProject = await updateProjectService(Number(id), req.body, req.user.id, req.user.role, req.logMeta);
+  sendSuccess(res, { project: updatedProject }, 'Проект обновлен');
+});
 
-    const newProject = await prisma.project.create({
-      data: {
-        number: null, 
-        status: 'PENDING',
-        formType,
-        customerName,
-        customerInn,
-        purchaseMethod,
-        executionDate: executionDate ? new Date(executionDate) : null,
-        partnerId: Number(req.user.id),
-        dynamicData: otherData 
-      }
-    });
-
-    console.log(`[Pending 1C] Проект создан в БД, готов к отправке в 1С. ID: ${newProject.id}`);
-
-    res.status(201).json({
-      message: "Заявка успешно создана и передана на модерацию",
-      projectId: newProject.id
-    });
-
-  } catch (error) {
-    console.error('Ошибка в projectController (create):', error);
-    res.status(500).json({ error: "Внутренняя ошибка сервера при создании проекта" });
-  }
-};
-
-export const getProjects = async (req: any, res: Response) => {
-  try {
-    const userId = Number(req.user.id);
-    const userRole = req.user.role;
-
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
-    const search = (req.query.search as string || '').trim();
-    const skip = (page - 1) * limit;
-
-    let where: any = {};
-
-    if (userRole === 'USER') {
-      where.partnerId = userId;
-    }
-
-    if (search) {
-      const cleanSearch = search.replace(/^PRJ-/i, '');
-      const searchId = parseInt(cleanSearch);
-      const isSearchNumeric = /^\d+$/.test(cleanSearch);
-
-      where = {
-        ...where,
-        OR: [
-          { customerName: { contains: search, mode: 'insensitive' } },
-          ...(isSearchNumeric && !isNaN(searchId) ? [{ id: searchId }] : []),
-          ...(userRole === 'MANAGER' || userRole === 'ADMIN' ? [
-            { partner: { companyName: { contains: search, mode: 'insensitive' } } },
-            { partner: { name: { contains: search, mode: 'insensitive' } } }
-          ] : [])
-        ]
-      };
-    }
-
-    // ВАЖНО: Сортировка происходит на уровне БД. 
-    // Поскольку мы обновляем updatedAt в sendMessage, 
-    // проект с 6-й страницы получит свежий Timestamp и вылетит на 1-ю страницу.
-    const [projects, totalCount] = await Promise.all([
-      prisma.project.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { updatedAt: 'desc' }, // Главный двигатель сортировки
-        include: {
-          partner: { select: { id: true, name: true, companyName: true } },
-          _count: {
-            select: {
-              messages: {
-                where: { isRead: false, senderId: { not: userId } }
-              }
-            }
-          }
-        }
-      }),
-      prisma.project.count({ where })
-    ]);
-
-    // Мапим данные для фронтенда
-    const processedProjects = projects.map((p: any) => ({
-      ...p,
-      unreadCount: p._count.messages,
-      hasUnread: p._count.messages > 0,
-      _count: undefined
-    }));
-
-    // УБИРАЕМ ручную сортировку .sort(), так как она ломает логику пагинации.
-    // Если на 1-й странице есть 10 проектов, отсортированных по updatedAt, 
-    // и среди них есть непрочитанные — они и так будут в самом верху благодаря БД.
-
-    res.json({
-      projects: processedProjects,
-      totalPages: Math.ceil(totalCount / limit),
-      currentPage: page,
-      totalCount
-    });
-
-  } catch (error) {
-    console.error('Ошибка в getProjects:', error);
-    res.status(500).json({ error: "Ошибка сервера при получении списка" });
-  }
-};
-
-export const updateProject = async (req: any, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { 
-      formType, 
-      customerName, 
-      customerInn, 
-      purchaseMethod, 
-      executionDate, 
-      ...otherData 
-    } = req.body;
-
-    const project = await prisma.project.findUnique({
-      where: { id: Number(id) }
-    });
-
-    if (!project) return res.status(404).json({ error: "Проект не найден" });
-
-    if (project.partnerId !== req.user.id && req.user.role !== 'MANAGER') {
-      return res.status(403).json({ error: "Доступ запрещен" });
-    }
-
-    const updatedProject = await prisma.project.update({
-      where: { id: Number(id) },
-      data: {
-        formType,
-        customerName,
-        customerInn,
-        purchaseMethod,
-        executionDate: executionDate ? new Date(executionDate) : null,
-        dynamicData: otherData,
-        updatedAt: new Date()
-      }
-    });
-
-    res.json({ message: "Проект обновлен", project: updatedProject });
-  } catch (error) {
-    res.status(500).json({ error: "Ошибка при обновлении" });
-  }
-};
-
-export const updateProjectStatus = async (req: any, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (req.user.role !== 'MANAGER' && req.user.role !== 'ADMIN') {
-      return res.status(403).json({ error: "Недостаточно прав" });
-    }
-
-    const updatedProject = await prisma.project.update({
-      where: { id: Number(id) },
-      data: { 
-        status,
-        lastEditorId: req.user.id, 
-        updatedAt: new Date()
-      },
-      include: {
-        partner: { select: { name: true, companyName: true, id: true } },
-        lastEditor: { select: { name: true } }
-      }
-    });
-
-    const io = req.app.get('io');
-    if (io) {
-      io.to('admin_room').emit('project_status_changed', updatedProject);
-      io.to(`user_${updatedProject.partnerId}`).emit('project_status_changed', updatedProject);
-      await emitStatsUpdate(io);
-    }
-
-    res.json({ message: "Статус обновлен", project: updatedProject });
-  } catch (error) {
-    res.status(500).json({ error: "Ошибка смены статуса" });
-  }
-};
+export const updateProjectStatus = asyncHandler(async (req: any, res: Response) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  const updatedProject = await updateProjectStatusService(Number(id), status, req.user.id, req.user.role, req.logMeta);
+  sendSuccess(res, { project: updatedProject }, 'Статус обновлен');
+});

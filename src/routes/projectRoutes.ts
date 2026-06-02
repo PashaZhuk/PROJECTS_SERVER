@@ -1,24 +1,16 @@
 import { Router } from 'express';
-import { createProject, getProjects,updateProject, updateProjectStatus } from '../controllers/projectController.js';
-import { authMiddleware } from '../middleware/authMiddleware.js';
-import { managerMiddleware } from '../middleware/managerMiddleware.js';
+import { createProject, getProjects, updateProject, updateProjectStatus } from '../controllers/projectController';
+import { authMiddleware } from '../middleware/authMiddleware';
+import { managerMiddleware } from '../middleware/managerMiddleware';
+import { validate, createProjectSchema, updateProjectSchema, updateProjectStatusSchema } from '../utils/validationSchemas';
 
 const router = Router();
 
-// Защищаем все роуты проектов авторизацией
 router.use(authMiddleware);
 
-// POST /api/projects — создание новой заявки
-router.post('/', createProject);
-
-// GET /api/projects — получение списка (фильтрация внутри контроллера)
+router.post('/', validate(createProjectSchema), createProject);
 router.get('/', getProjects);
-
-// PUT /api/projects — обновление конкретного проекта по его id
-router.put('/:id', updateProject);
-
-router.patch('/:id/status', authMiddleware, managerMiddleware, updateProjectStatus);
-
-
+router.put('/:id', validate(updateProjectSchema), updateProject);
+router.patch('/:id/status', managerMiddleware, validate(updateProjectStatusSchema), updateProjectStatus);
 
 export default router;

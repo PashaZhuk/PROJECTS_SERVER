@@ -1,214 +1,100 @@
-import type { Response, Request } from 'express';
-import { prisma } from '../config/db.js'
-import bcrypt from 'bcrypt'
-import { generateToken } from '../utils/generateToken'
-// Импортируем хелпер для обновления статистики
-import { emitStatsUpdate } from './userController'; 
+import type { Response } from 'express';
+import {
+  registerUser,
+  loginUser,
+  send2FACodeService,
+  verify2FACodeService,
+  logoutUser,
+  forgotPasswordService,
+  resetPasswordService,
+  changePasswordService,
+} from '../services/authService.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { AppError } from '../utils/AppError.js';
+import { rotateRefreshToken, clearRefreshCookie } from '../utils/generateToken.js';
+import { sendSuccess, sendError } from '../utils/response.js';
 
-interface AuthRequest extends Request {
-    user?: any;
-}
+export const register = asyncHandler(async (req: any, res: Response) => {
+  const user = await registerUser(req.body, req.logMeta);
+  sendSuccess(res, { user: { id: user.id, name: user.name, email: user.email, role: user.role, companyName: user.companyName } }, 'Пользователь успешно создан', 201);
+});
 
-const register = async (req: Request, res: Response) => {
-  try {
-    const { name, email, password, role, unp, companyName } = req.body;
-
-    // 1. Базовая валидация обязательных полей
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: "Пожалуйста, заполните все обязательные поля" });
-    }
-
-    // 2. Проверка существования Email
-    const userExist = await prisma.user.findUnique({ where: { email } });
-    if (userExist) {
-      return res.status(400).json({ error: "Пользователь с таким Email уже существует" });
-    }
-
-    // 3. БЕЗОПАСНОСТЬ: Ограничение на создание ADMIN
-    if (role === 'ADMIN') {
-      return res.status(403).json({ error: "Недостаточно прав для создания администратора" });
-    }
-
-    // 4. СПЕЦИФИЧЕСКАЯ ПРОВЕРКА ДЛЯ ПАРТНЕРА (ROLE === 'USER')
-    if (role === 'USER') {
-      if (!unp || !companyName) {
-        return res.status(400).json({ error: "Для партнера обязательны УНП и название компании" });
-      }
-
-      const cleanUnp = unp.toString().trim();
-      const cleanCompanyName = companyName.trim();
-
-      const partnerConflict = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { unp: cleanUnp },
-            { companyName: { equals: cleanCompanyName, mode: 'insensitive' } }
-          ]
-        }
-      });
-
-      if (partnerConflict) {
-        const isUnpMatch = partnerConflict.unp === cleanUnp;
-        return res.status(400).json({ 
-          error: isUnpMatch 
-            ? `Партнер с УНП ${cleanUnp} уже зарегистрирован` 
-            : `Компания "${cleanCompanyName}" уже существует в системе` 
-        });
-      }
-    }
-
-    // 5. Хеширование пароля
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // 6. Создание пользователя
-    const user = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        email: email.toLowerCase().trim(),
-        password: hashedPassword,
-        role: role || 'USER',
-        unp: role === 'USER' ? unp.toString().trim() : null,
-        companyName: role === 'USER' ? companyName.trim() : null,
-        mustChangePassword: true
-      },
-    });
-
-    // --- ОБНОВЛЕНИЕ СТАТИСТИКИ (НОВЫЙ ЮЗЕР) ---
-    emitStatsUpdate(req.app.get('io'));
-
-    res.status(201).json({
-      status: "success",
-      message: "Пользователь успешно создан",
-      data: {
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          companyName: user.companyName
-        }
-      }
-    });
-
-  } catch (error: any) {
-    console.error("Registration Error:", error);
-    if (error.code === 'P2002') {
-      const field = error.meta?.target;
-      return res.status(400).json({ 
-        error: `Данные в поле ${field} уже используются` 
-      });
-    }
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+export const login = asyncHandler(async (req: any, res: Response) => {
+  const { email, password } = req.body;
+  const result = await loginUser(email, password, res, req.logMeta);
+  if (!result.success) {
+    if (result.userBlocked) return sendError(res, 403, 'Ваш аккаунт заблокирован', { code: 'USER_BLOCKED' });
+    if (result.lockType === 'password') return sendError(res, 429, 'Аккаунт заблокирован из-за частых ошибок', { timeLeft: result.timeLeft, lockType: 'password' });
+    if (result.lockType === '2FA') return sendError(res, 429, 'Аккаунт заблокирован из-за ошибок 2FA', { timeLeft: result.timeLeft, lockType: '2FA' });
+    if (result.requires2FA) return res.status(200).json({ success: true, status: '2FA_REQUIRED', message: 'Требуется подтверждение входа (SMS)', data: { userId: result.userId, email: result.email, requires2FA: true } });
+    if (result.attemptsLeft !== undefined) return sendError(res, 401, 'Неверный email или пароль', { attemptsLeft: result.attemptsLeft });
+    return sendError(res, 401, 'Неверный email или пароль');
   }
-};
+  sendSuccess(res, { user: result.user, token: result.token });
+});
 
-const login = async (req: Request, res: Response) => {
-    try {
-        const { email, password } = req.body;
-        
-        const user = await prisma.user.findUnique({
-            where: { email: email }
-        });
+export const send2FACode = asyncHandler(async (req: any, res: Response) => {
+  const { userId } = req.body;
+  const { debugCode } = await send2FACodeService(userId, req.logMeta);
+  sendSuccess(res, { debugCode }, 'Код отправлен (см. консоль сервера)');
+});
 
-        if (!user) {
-            return res.status(401).json({ error: "Invalid email or password" });
-        }
+export const verify2FACode = asyncHandler(async (req: any, res: Response) => {
+  const { userId, code } = req.body;
+  const result = await verify2FACodeService(userId, code, res, req.logMeta);
+  if (!result.success) {
+    if (result.locked) return sendError(res, 429, 'Аккаунт заблокирован после неудачных попыток.', { timeLeft: result.timeLeft, lockType: '2FA' });
+    if (result.attemptsLeft !== undefined) return sendError(res, 401, 'Неверный код', { attemptsLeft: result.attemptsLeft });
+    return sendError(res, 401, 'Неверный код');
+  }
+  sendSuccess(res, { user: result.user, token: result.token }, '2FA успешно пройдена');
+});
 
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-        if (!isPasswordValid) {
-            return res.status(401).json({ error: "Invalid email or password" });
-        }
+export const logout = asyncHandler(async (req: any, res: Response) => {
+  const userId = req.user?.id;
+  await logoutUser(userId, res, req.logMeta);
+  res.clearCookie('jwt', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/' });
+  sendSuccess(res);
+});
 
-        // 1. Обновляем пользователя и СОХРАНЯЕМ результат в переменную
-        const updatedUser = await prisma.user.update({
-            where: { id: user.id },
-            data: { lastSeen: new Date() }
-        });
+export const getProfile = asyncHandler(async (req: any, res: Response) => {
+  const user = req.user;
+  if (!user) throw new AppError(404, 'User not found');
+  const { password, ...userData } = user;
+  sendSuccess(res, userData);
+});
 
-        const token = generateToken(String(user.id), res);
-        const io = req.app.get('io');
+export const forgotPassword = asyncHandler(async (req: any, res: Response) => {
+  const { email } = req.body;
+  await forgotPasswordService(email, req.logMeta);
+  sendSuccess(res, undefined, 'Если такой пользователь существует, письмо отправлено.');
+});
 
-        // 2. ОБНОВЛЕНИЕ ОБЩЕЙ СТАТИСТИКИ (цифры в карточках)
-        emitStatsUpdate(io);
+export const resetPassword = asyncHandler(async (req: any, res: Response) => {
+  const { token, newPassword } = req.body;
+  await resetPasswordService(token, newPassword, req.logMeta);
+  sendSuccess(res, undefined, 'Пароль успешно изменен');
+});
 
-        // 3. АДРЕСНОЕ ОБНОВЛЕНИЕ СТАТУСА (чтобы кружок в таблице загорелся мгновенно)
-        // Импортируй эту функцию из userController или пропиши логику прямо здесь:
-        if (io) {
-            io.to('admin_room').emit('user_status_changed', { 
-                userId: user.id, 
-                lastSeen: updatedUser.lastSeen 
-            });
-        }
+export const refresh = asyncHandler(async (req: any, res: Response) => {
+  const rawToken = req.cookies?.refreshToken;
+  const result = await rotateRefreshToken(rawToken, res);
 
-        res.status(200).json({
-            status: "success",
-            data: {
-                user: {
-                    id: user.id,
-                    name: user.name,
-                    email: user.email,
-                    role: user.role,
-                    mustChangePassword: user.mustChangePassword
-                },
-                token
-            }
-        });
-    } catch (error) {
-        console.error("Login error:", error);
-        res.status(500).json({ error: "Login error" });
-    }
-};
+  if (!result.success) {
+    res.clearCookie('jwt', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/' });
+    return res.status(401).json({ success: false, error: result.error });
+  }
 
-const logout = async (req: any, res: Response) => {
-    try {
-        const userId = req.user?.id;
-        const io = req.app.get('io');
+  sendSuccess(res, {
+    user: result.user,
+    token: result.accessToken,
+  });
+});
 
-        console.log('Logout attempt for userId:', userId); // Проверка в консоли
-
-        if (userId) {
-            const oldDate = new Date(Date.now() - 10 * 60 * 1000);
-            
-            await prisma.user.update({
-                where: { id: userId },
-                data: { lastSeen: oldDate }
-            });
-
-            if (io) {
-                console.log(`Sending offline status for user ${userId} to admin_room`);
-                io.to('admin_room').emit('user_status_changed', { 
-                    userId, 
-                    lastSeen: oldDate 
-                });
-                emitStatsUpdate(io);
-            }
-        }
-
-        res.cookie("jwt", "", { httpOnly: true, expires: new Date(0) });
-        return res.status(200).json({ status: "success" });
-    } catch (error) {
-        console.error('Logout error:', error);
-        return res.status(500).json({ error: "Logout failed" });
-    }
-};
-
-const getProfile = async (req: AuthRequest, res: Response) => {
-    try {
-        const user = req.user;
-        if (!user) {
-            return res.status(404).json({ error: "User not found" });
-        }
-
-        const { password, ...userData } = user;
-        res.status(200).json({
-            status: "success",
-            data: userData
-        });
-    } catch (error) {
-        console.error("Get Profile Error:", error);
-        res.status(500).json({ error: "Internal server error" });
-    }
-};
-
-export { register, login, logout, getProfile }
+export const changePassword = asyncHandler(async (req: any, res: Response) => {
+  const { currentPassword, newPassword } = req.body;
+  const userId = req.user?.id;
+  if (!userId) throw new AppError(401, 'Не авторизован');
+  await changePasswordService(userId, currentPassword, newPassword, req.logMeta);
+  sendSuccess(res, undefined, 'Пароль успешно изменен');
+});

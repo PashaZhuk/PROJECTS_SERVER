@@ -11,6 +11,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  
 }
 
 enum Role {
@@ -28,11 +29,28 @@ enum ProjectStatus {
   CLOSED
 }
 
+model Company {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  unp        String   @unique
+  externalId String?  @unique
+  address    String?
+  phone      String?
+  email      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([name])
+  @@index([unp])
+}
+
+
+
 model User {
   id                 Int       @id @default(autoincrement())
   email              String    @unique
   password           String
-  name               String
+  name               String?
   companyName        String?
   unp                String?   @unique
   role               Role      @default(USER)
@@ -40,11 +58,57 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   lastSeen           DateTime  @default(now())
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
+  phone               String?  @unique @db.VarChar(20) 
+
+  // 🔐 ПОЛЕ ДЛЯ КОНТРОЛЯ СЕССИЙ
+  currentSessionId   String?   @db.VarChar(36) // UUID v4
+  isBlocked          Boolean   @default(false)
+
+   // --- Поля для защиты от брутфорса входа ---
+  failedLoginAttempts Int      @default(0)
+  lockUntil           DateTime? 
+
+  // 🔥 НОВЫЕ ПОЛЯ ДЛЯ 2FA ---
+  // Флаг: успешно ли пройден 2FA в текущей сессии
+  twoFactorVerified   Boolean  @default(false)
+  
+  // Счетчик неудачных попыток ввода 2FA кода
+  twoFactorAttempts   Int      @default(0)
+  
+  // Время блокировки после 3 неудачных попыток 2FA
+  twoFactorLockUntil  DateTime?
+  
+  // Время последней отправки кода (для лимита 1 раз в 60 сек)
+  twoFactorCodeSentAt DateTime?
+
+  // Хеш 6-значного кода 2FA (для проверки без хранения plaintext)
+  twoFactorCodeHash   String?   @db.VarChar(64)
+  // Срок действия кода (5 минут)
+  twoFactorCodeExpiresAt DateTime?
 
   // Связи
   projects           Project[] @relation("PartnerProjects")
   processedProjects  Project[] @relation("ManagerAction")
   messages           Message[]
+  refreshTokens      RefreshToken[]
+  eventLogs          EventLog[]
+}
+
+model RefreshToken {
+  id              Int       @id @default(autoincrement())
+  tokenHash       String    @unique @db.VarChar(64)      // SHA-256 хеш refresh токена
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId       String?   @db.VarChar(36)               // UUID сессии
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+  replacedByHash  String?   @db.VarChar(64)               // ссылка на новый токен при ротации
+
+  @@index([userId])
+  @@index([sessionId])
 }
 
 model Project {
@@ -77,6 +141,14 @@ model Project {
   @@index([status])
 }
 
+model SiteSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Message {
   id         Int      @id @default(autoincrement())
   text       String
@@ -90,4 +162,51 @@ model Message {
   // АВТОР: Cascade. Если удаляем юзера — его сообщения удаляются.
   senderId   Int
   sender     User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+}
+
+model TestEquipment {
+  id              Int      @id @default(autoincrement())
+  category        String   // ВКС, IP ТЕЛЕФОНЫ, Сетевое оборудование и т.д.
+  name            String   // Наименование
+  accountingType  String?  // Учёт: МС, ОС, MAC адрес, вне учета
+  purpose         String?  // Предназначение
+  serialNumber    String?  // Серийный номер
+  macAddress      String?  // MAC адрес
+  issueDate       String?  // Дата выдачи
+  issuedTo        String?  // Кому выдано (партнёр)
+  issuedToWhere   String?  // Куда выдано
+  status          String   @default("in_stock") // in_stock | issued | sold | repair | decommissioned
+  comments        String?  // Комментарии
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model News {
+  id        Int      @id @default(autoincrement())
+  title     String
+  link      String
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BroadcastLog {
+  id        Int      @id @default(autoincrement())
+  subject   String
+  message   String
+  recipients Int     @default(0)
+  status    String   @default("sent")
+  sentAt    DateTime @default(now())
+  sentBy    Int?
+}
+
+model EventLog {
+  id          Int      @id @default(autoincrement())
+  action      String
+  description String
+  entityType  String?
+  entityId    Int?
+  userId      Int?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
 }

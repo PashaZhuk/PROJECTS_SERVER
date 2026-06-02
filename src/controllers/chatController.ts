@@ -1,118 +1,27 @@
-import { type Response } from 'express';
-import { prisma } from '../config/db.js';
+import type { Response } from 'express';
+import {
+  getProjectMessages as getProjectMessagesService,
+  sendMessage as sendMessageService,
+  markMessagesAsRead as markMessagesAsReadService,
+} from '../services/chatService.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+import { sendSuccess } from '../utils/response.js';
 
-const getProjectMessages = async (req: any, res: Response) => {
-  try {
-    const { projectId } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const project = await prisma.project.findUnique({
-      where: { id: parseInt(projectId) },
-      select: { partnerId: true }
-    });
+export const getProjectMessages = asyncHandler(async (req: any, res: Response) => {
+  const { projectId } = req.params;
+  const messages = await getProjectMessagesService(Number(projectId), req.user.id, req.user.role, req.logMeta);
+  sendSuccess(res, messages);
+});
 
-    if (!project) return res.status(404).json({ error: "Проект не найден" });
-    if (userRole !== 'MANAGER' && project.partnerId !== userId) {
-      return res.status(403).json({ error: "У вас нет доступа к переписке" });
-    }
+export const sendMessage = asyncHandler(async (req: any, res: Response) => {
+  const { projectId } = req.params;
+  const { text } = req.body;
+  const message = await sendMessageService(Number(projectId), text, req.user.id, req.logMeta);
+  sendSuccess(res, message, undefined, 201);
+});
 
-    const messages = await prisma.message.findMany({
-      where: { projectId: parseInt(projectId) },
-      orderBy: { createdAt: 'asc' },
-      include: { sender: { select: { id: true, name: true, role: true } } }
-    });
-
-    res.json(messages);
-  } catch (error) {
-    console.error("Chat fetch error:", error);
-    res.status(500).json({ error: "Ошибка при получении сообщений" });
-  }
-};
-
-const sendMessage = async (req: any, res: Response) => {
-  try {
-    const { projectId } = req.params;
-    const { text } = req.body;
-    const senderId = req.user.id;
-    const parsedProjectId = parseInt(projectId);
-
-    if (!text || text.trim().length === 0) return res.status(400).json({ error: "Сообщение не может быть пустым" });
-    if (text.length > 3000) return res.status(400).json({ error: "Сообщение слишком длинное (макс. 3000 симв.)" });
-
-    const [message] = await prisma.$transaction([
-      prisma.message.create({
-        data: { text: text.trim(), projectId: parsedProjectId, senderId: senderId },
-        include: { sender: { select: { id: true, name: true, role: true } } }
-      }),
-      prisma.project.update({ where: { id: parsedProjectId }, data: { updatedAt: new Date() } })
-    ]);
-
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`project_${parsedProjectId}`).emit('new_message', message);
-      console.log(`✉️ [Chat] New message in PRJ-${parsedProjectId} from ${message.sender.name}`);
-    }
-
-    res.status(201).json(message);
-  } catch (error) {
-    console.error("Send message error:", error);
-    res.status(500).json({ error: "Ошибка при отправке сообщения" });
-  }
-};
-
-const markAsRead = async (req: any, res: Response) => {
-  try {
-    const { projectId } = req.params;
-    const userId = req.user.id;
-    console.log(`📖 markAsRead called: projectId=${projectId}, userId=${userId}`);
-
-    // ✅ 1. СНАЧАЛА находим отправителей непрочитанных сообщений (пока isRead: false)
-    const senders = await prisma.message.findMany({
-      where: {
-        projectId: parseInt(projectId),
-        isRead: false,
-        senderId: { not: userId }
-      },
-      select: { senderId: true },
-      distinct: ['senderId']
-    });
-
-    // ✅ 2. ТОЛЬКО ПОСЛЕ этого обновляем БД
-    const updateResult = await prisma.message.updateMany({
-      where: {
-        projectId: parseInt(projectId),
-        isRead: false,
-        senderId: { not: userId }
-      },
-      data: { isRead: true }
-    });
-
-    console.log(`📖 Updated ${updateResult.count} messages for project ${projectId}`);
-
-    const io = req.app.get('io');
-    if (io && updateResult.count > 0) {
-      // Уведомляем отправителей в их личные комнаты
-      for (const sender of senders) {
-        io.to(`user_${sender.senderId}`).emit('messages_read', { 
-          projectId: parseInt(projectId), 
-          readerId: userId 
-        });
-      }
-      
-      // Дублируем в комнату проекта
-      io.to(`project_${projectId}`).emit('messages_read', { 
-        projectId: parseInt(projectId), 
-        readerId: userId 
-      });
-      
-      console.log(`📡 Emitted messages_read to ${senders.length} senders and project room`);
-    }
-
-    res.json({ success: true, updatedCount: updateResult.count });
-  } catch (error) {
-    console.error("Error marking messages as read:", error);
-    res.status(500).json({ error: "Ошибка при обновлении статуса сообщений" });
-  }
-};
-
-export { getProjectMessages, sendMessage, markAsRead };
+export const markAsRead = asyncHandler(async (req: any, res: Response) => {
+  const { projectId } = req.params;
+  const result = await markMessagesAsReadService(Number(projectId), req.user.id, req.logMeta);
+  sendSuccess(res, result);
+});

@@ -1,24 +1,24 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/db.js';
-import { type User, Role } from '../../generated/prisma/client.js'
+import { sendError } from '../utils/response.js';
 
 interface JwtPayload {
   id: string;
+  sessionId?: string;
 }
 
 interface AuthRequest extends Request {
-  user?: User; 
+  user?: any;
 }
 
 export const authMiddleware = async (
-  req: AuthRequest, 
-  res: Response, 
+  req: AuthRequest,
+  res: Response,
   next: NextFunction
 ) => {
   let token: string | undefined;
 
-  // 1. Получение токена
   if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
   } else if (req.cookies?.jwt) {
@@ -26,41 +26,78 @@ export const authMiddleware = async (
   }
 
   if (!token) {
-    return res.status(401).json({ error: "Not authorized, no token provided" });
+    return sendError(res, 401, "Not authorized, no token provided");
   }
 
   try {
-    // 2. Верификация токена
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
     const userId = Number(decoded.id);
 
     if (isNaN(userId)) {
-      return res.status(401).json({ error: "Invalid user ID format" });
+      return sendError(res, 401, "Invalid user ID format");
     }
 
-    // 3. Проверка существования пользователя в БД
     const user = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        companyName: true,
+        isBlocked: true,
+        currentSessionId: true,
+        lastSeen: true,
+      }
     });
 
     if (!user) {
-      console.log(`Auth Error: User with ID ${userId} not found`);
-      return res.status(401).json({ error: "User no longer exists" });
+      return sendError(res, 401, "User no longer exists");
     }
 
-    // 4. Обновление статуса "Online" (lastSeen)
-    // Делаем это без await, чтобы не задерживать ответ пользователю (фон)
-    prisma.user.update({
-      where: { id: userId },
-      data: { lastSeen: new Date() }
-    }).catch(err => console.error("Background lastSeen update failed:", err));
+    if (user.isBlocked) {
+      return sendError(res, 403, "Ваш аккаунт заблокирован. Обратитесь к администратору.", { code: "USER_BLOCKED" });
+    }
 
-    // 5. Передача данных дальше
+    if (decoded.sessionId && user.currentSessionId !== decoded.sessionId) {
+      return sendError(res, 401, "Сессия завершена из-за входа с другого устройства", { code: "SESSION_SUPERSEDED" });
+    }
+
+    const now = new Date();
+    const lastSeen = new Date(user.lastSeen);
+    const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
+    
+    const LIMIT_USER = 30;
+    const LIMIT_OTHERS = 120;
+    const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
+
+    if (diffMinutes > limit) {
+      return sendError(res, 401, "Сессия истекла из-за неактивности", { code: "SESSION_EXPIRED" });
+    }
+
+    const secondsSinceLastSeen = (now.getTime() - lastSeen.getTime()) / 1000;
+    if (secondsSinceLastSeen > 60) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { lastSeen: now }
+      }).catch(err => console.error("lastSeen update failed:", err));
+    }
+
+    // Добавляем информацию о пользователе в logMeta
+    req.logMeta = {
+      ...(req.logMeta || {}),
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      companyName: user.companyName,
+      displayName: user.companyName || user.name || `Пользователь ${user.id}`,
+      role: user.role,
+    };
+
     req.user = user;
     next();
-
   } catch (err: any) {
-    return res.status(401).json({ error: "Not authorized, token failed" });
+    console.error("[Auth] Token verification failed:", err.message);
+    return sendError(res, 401, "Not authorized, token failed");
   }
 };
-
