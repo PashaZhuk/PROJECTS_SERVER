@@ -93,7 +93,7 @@ describe('loginUser', () => {
 
     expect(result.success).toBe(true)
     expect(result.user).toBeDefined()
-    expect(result.user.role).toBe('MANAGER')
+    expect(result.user!.role).toBe('MANAGER')
   })
 
   it('требует 2FA для USER', async () => {
@@ -158,7 +158,7 @@ describe('send2FACodeService', () => {
     const res = mockRes()
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    const result = await send2FACodeService(login.userId)
+    const result = await send2FACodeService(login.userId!)
     expect(result).toHaveProperty('debugCode')
     expect(result.debugCode).toMatch(/^\d{6}$/)
   })
@@ -168,9 +168,9 @@ describe('send2FACodeService', () => {
     const res = mockRes()
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    await send2FACodeService(login.userId)
+    await send2FACodeService(login.userId!)
     await expect(
-      send2FACodeService(login.userId)
+      send2FACodeService(login.userId!)
     ).rejects.toThrow(AppError)
   })
 
@@ -202,9 +202,9 @@ describe('verify2FACodeService', () => {
     const res = mockRes()
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    const { debugCode } = await send2FACodeService(login.userId)
+    const { debugCode } = await send2FACodeService(login.userId!)
     const verifyRes = mockRes()
-    const result = await verify2FACodeService(login.userId, debugCode!, verifyRes)
+    const result = await verify2FACodeService(login.userId!, debugCode!, verifyRes)
 
     expect(result.success).toBe(true)
     expect(result.user).toBeDefined()
@@ -216,10 +216,10 @@ describe('verify2FACodeService', () => {
     const res = mockRes()
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    await send2FACodeService(login.userId)
+    await send2FACodeService(login.userId!)
     const verifyRes = mockRes()
 
-    const result = await verify2FACodeService(login.userId, '000000', verifyRes)
+    const result = await verify2FACodeService(login.userId!, '000000', verifyRes)
     expect(result.success).toBe(false)
     expect(result.attemptsLeft).toBe(2)
   })
@@ -230,10 +230,10 @@ describe('verify2FACodeService', () => {
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
     // Отправляем код один раз — пытаемся ввести неверно 3 раза
-    await send2FACodeService(login.userId)
+    await send2FACodeService(login.userId!)
 
     for (let i = 0; i < 3; i++) {
-      const vr = await verify2FACodeService(login.userId, '000000', mockRes())
+      const vr = await verify2FACodeService(login.userId!, '000000', mockRes())
       if (i === 2) {
         expect(vr.locked).toBe(true)
         expect(vr.timeLeft).toBeGreaterThan(0)
@@ -248,16 +248,16 @@ describe('verify2FACodeService', () => {
     const res = mockRes()
     const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    await send2FACodeService(login.userId)
+    await send2FACodeService(login.userId!)
 
     // Протухаем код вручную
     const { prisma } = await import('../../src/config/db.js')
     await prisma.user.update({
-      where: { id: login.userId },
+      where: { id: login.userId! },
       data: { twoFactorCodeExpiresAt: new Date(Date.now() - 1000) },
     })
 
-    const result = await verify2FACodeService(login.userId, '000000', mockRes())
+    const result = await verify2FACodeService(login.userId!, '000000', mockRes())
     expect(result.success).toBe(false)
     expect(result.message).toContain('истёк')
   })

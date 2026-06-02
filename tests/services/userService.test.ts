@@ -41,13 +41,13 @@ describe('getUsersList', () => {
   it('фильтрует по роли', async () => {
     const result = await getUsersList({ page: 1, limit: 10, search: '', role: 'USER' })
     expect(result.users.length).toBe(1)
-    expect(result.users[0].role).toBe('USER')
+    expect(result.users[0]!.role).toBe('USER')
   })
 
   it('ищет по email', async () => {
     const result = await getUsersList({ page: 1, limit: 10, search: 'm-test', role: '' })
     expect(result.users.length).toBe(1)
-    expect(result.users[0].email).toBe(MANAGER_DATA.email)
+    expect(result.users[0]!.email).toBe(MANAGER_DATA.email)
   })
 })
 

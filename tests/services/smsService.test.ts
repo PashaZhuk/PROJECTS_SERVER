@@ -44,7 +44,7 @@ describe('sendSms', () => {
     expect(result.messageId).toBe(12345)
     expect(result.price).toBe(0.05)
     expect(mockFetch).toHaveBeenCalledTimes(1)
-    const url = mockFetch.mock.calls[0][0] as string
+    const url = mockFetch.mock.calls[0]![0] as string
     expect(url).toContain('smart-sender.a1.by')
     expect(url).toContain('msisdn=%2B375291234567')
     expect(url).toContain('sender=test_sender')
@@ -95,7 +95,7 @@ describe('sendSms', () => {
 
     await sendSms('+375291234567', 'test')
 
-    const url = mockFetch.mock.calls[0][0] as string
+    const url = mockFetch.mock.calls[0]![0] as string
     expect(url).toContain('sender=support_IPM')
   })
 

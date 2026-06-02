@@ -30,18 +30,18 @@ describe('getCompanies', () => {
   it('ищет по имени', async () => {
     const companies = await getCompanies('Тест')
     expect(companies.length).toBe(1)
-    expect(companies[0].name).toBe('ООО Тест')
+    expect(companies[0]!.name).toBe('ООО Тест')
   })
 
   it('ищет по УНП', async () => {
     const companies = await getCompanies('987654321')
     expect(companies.length).toBe(1)
-    expect(companies[0].unp).toBe('987654321')
+    expect(companies[0]!.unp).toBe('987654321')
   })
 
   it('возвращает только id, name, unp, phone', async () => {
     const companies = await getCompanies()
-    const keys = Object.keys(companies[0])
+    const keys = Object.keys(companies[0]!)
     expect(keys).toEqual(['id', 'name', 'unp', 'phone'])
   })
 })
