@@ -7,12 +7,12 @@ import { sendError } from './response.js';
 // ----------------------
 
 export const loginSchema = z.object({
-  email: z.string().email('Некорректный email'),
+  email: z.string().regex(/@/, 'Некорректный email'),
   password: z.string().min(1, 'Пароль обязателен'),
 });
 
 export const registerSchema = z.object({
-  email: z.string().email('Некорректный email'),
+  email: z.string().regex(/@/, 'Некорректный email'),
   password: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
   name: z.string().optional(),
   role: z.enum(['USER', 'MANAGER']).optional(),
@@ -33,7 +33,7 @@ export const changePasswordSchema = z.object({
 });
 
 export const forgotPasswordSchema = z.object({
-  email: z.string().email('Некорректный email'),
+  email: z.string().regex(/@/, 'Некорректный email'),
 });
 
 export const resetPasswordSchema = z.object({
