@@ -11,3 +11,7 @@ export async function createNews(data: { title: string; link: string; imageUrl?:
 export async function deleteNews(id: number) {
   return prisma.news.delete({ where: { id } });
 }
+
+export async function updateNews(id: number, data: { title?: string; link?: string; imageUrl?: string }) {
+  return prisma.news.update({ where: { id }, data });
+}

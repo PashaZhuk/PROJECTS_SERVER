@@ -12,7 +12,7 @@ import {
   removeEquipment,
   listCategories,
 } from '../controllers/equipmentController.js';
-import { listNews, addNews, removeNews } from '../controllers/newsController.js';
+import { listNews, addNews, removeNews, editNews } from '../controllers/newsController.js';
 import { listBroadcastLog } from '../controllers/broadcastLogController.js';
 import { listEvents } from '../controllers/eventLogController.js';
 
@@ -35,6 +35,7 @@ router.delete('/equipment/:id', removeEquipment);
 // News
 router.get('/news', listNews);
 router.post('/news', addNews);
+router.put('/news/:id', editNews);
 router.delete('/news/:id', removeNews);
 
 // Broadcast log
