@@ -40,16 +40,20 @@ export const getOnlineUsersFromSockets = () => {
 };
 
 export const fetchStatsInternal = async () => {
-  const [totalUsers, totalManagers] = await Promise.all([
+  const [totalUsers, totalManagers, allUsers, allManagers] = await Promise.all([
     prisma.user.count({ where: { role: 'USER' } }),
     prisma.user.count({ where: { role: 'MANAGER' } }),
+    prisma.user.findMany({ where: { role: 'USER' }, select: { name: true, companyName: true, email: true } }),
+    prisma.user.findMany({ where: { role: 'MANAGER' }, select: { name: true, email: true } }),
   ]);
-  const { onlineUsers, onlineManagers } = getOnlineUsersFromSockets();
+  const { onlineUsers, onlineManagers, onlineUserNames, onlineManagerNames } = getOnlineUsersFromSockets();
   return {
     totalUsers,
     totalManagers,
+    totalUserNames: allUsers.map(u => u.companyName || u.name || u.email),
+    totalManagerNames: allManagers.map(m => m.name || m.email),
     onlineCount: onlineUsers + onlineManagers,
-    details: { onlineUsers, onlineManagers },
+    details: { onlineUsers, onlineManagers, onlineUserNames, onlineManagerNames },
   };
 };
 
