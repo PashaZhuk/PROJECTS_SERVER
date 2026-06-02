@@ -6,10 +6,13 @@ import { config } from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { connectDB } from './config/db.js';
 import { prisma } from './config/db.js';
+import { generateAccessToken } from './utils/generateToken.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
@@ -165,6 +168,67 @@ io.use(async (socket, next) => {
     socket.data.userRole = user.role;
     next();
   } catch (err: any) {
+    // Если JWT истёк — пробуем обновить через refreshToken
+    if (err.name === 'TokenExpiredError') {
+      try {
+        const cookieHeader = socket.handshake.headers.cookie;
+        if (!cookieHeader) return next(new Error('Authentication error'));
+
+        const cookies: Record<string, string> = {};
+        cookieHeader.split(';').forEach(cookie => {
+          const [name, value] = cookie.trim().split('=');
+          if (name && value) cookies[name] = value;
+        });
+
+        const rawRefresh = cookies['refreshToken'];
+        if (!rawRefresh) return next(new Error('Authentication error: no refresh token'));
+
+        const tokenHash = crypto.createHash('sha256').update(rawRefresh).digest('hex');
+        const stored = await prisma.refreshToken.findUnique({
+          where: { tokenHash },
+          include: { user: { select: { id: true, role: true, isBlocked: true, name: true, companyName: true } } },
+        });
+        if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+          return next(new Error('Authentication error: invalid refresh token'));
+        }
+        if (stored.user.isBlocked) return next(new Error('User is blocked'));
+
+        // Ротация refresh токена
+        const newRawRefresh = uuidv4();
+        const newHash = crypto.createHash('sha256').update(newRawRefresh).digest('hex');
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+        await prisma.$transaction([
+          prisma.refreshToken.update({
+            where: { id: stored.id },
+            data: { revokedAt: new Date(), replacedByHash: newHash },
+          }),
+          prisma.refreshToken.create({
+            data: { tokenHash: newHash, userId: stored.user.id, sessionId: stored.sessionId, expiresAt },
+          }),
+        ]);
+
+        // Новый access token
+        const newAccessToken = generateAccessToken(stored.user.id, stored.sessionId || '');
+
+        // Пытаемся установить cookie через ответ (работает при polling-транспорте)
+        try {
+          const res = (socket as any).request?.res;
+          if (res && !res.headersSent) {
+            const cookieStr = `jwt=${newAccessToken}; HttpOnly; Path=/; Max-Age=${15*60}; SameSite=Strict${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+            const existing = res.getHeader('Set-Cookie') || [];
+            res.setHeader('Set-Cookie', [...(Array.isArray(existing) ? existing : [existing]), cookieStr]);
+          }
+        } catch { /* cookie setting is optional — next page load will refresh via HTTP API */ }
+
+        socket.data.user = stored.user;
+        socket.data.userId = stored.user.id;
+        socket.data.userRole = stored.user.role;
+        return next();
+      } catch {
+        return next(new Error('Authentication error'));
+      }
+    }
     next(new Error('Authentication error'));
   }
 });
