@@ -45,14 +45,16 @@ export const registerUser = async (
   const existingEmail = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
   if (existingEmail) throw new AppError(400, 'Пользователь с таким Email уже зарегистрирован');
 
+  // Телефон обязателен для всех ролей (2FA)
+  if (!phone || !phone.trim()) throw new AppError(400, 'Телефон обязателен');
+  const cleanPhone = phone.trim();
+
   if (role === 'USER') {
     if (!companyName || !companyName.trim()) throw new AppError(400, 'Название компании обязательно');
     if (!unp || !unp.toString().trim()) throw new AppError(400, 'УНП обязателен');
-    if (!phone || !phone.trim()) throw new AppError(400, 'Телефон обязателен');
 
     const cleanUnp = unp.toString().trim();
     const cleanCompanyName = companyName.trim();
-    const cleanPhone = phone.trim();
 
     const existingUnp = await prisma.user.findUnique({ where: { unp: cleanUnp } });
     if (existingUnp) throw new AppError(400, `Партнер с УНП ${cleanUnp} уже зарегистрирован`);
@@ -78,12 +80,11 @@ export const registerUser = async (
     twoFactorVerified: false,
   };
 
+  createData.phone = cleanPhone;
   if (role === 'USER') {
-    createData.phone = phone!.trim();
     createData.unp = unp!.toString().trim();
     createData.companyName = companyName!.trim();
   } else {
-    createData.phone = undefined;
     createData.unp = null;
     createData.companyName = null;
   }
@@ -157,11 +158,9 @@ export const loginUser = async (
     emitUserLockStatus(user.id, { lockUntil: null, failedLoginAttempts: 0 });
   }
 
-  const requires2FA = user.role === 'USER';
-  if (requires2FA) {
-    logger.info('2FA required', enrichLogMeta());
-    return { success: false, requires2FA: true, userId: user.id, email: user.email };
-  }
+  // Все роли проходят 2FA
+  logger.info('2FA required', enrichLogMeta());
+  return { success: false, requires2FA: true, userId: user.id, email: user.email };
 
   const sessionId = uuidv4();
   const { accessToken } = await generateTokens(user.id, sessionId, res);

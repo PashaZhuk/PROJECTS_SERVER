@@ -45,6 +45,7 @@ async function main() {
       password: adminPassword,
       role: Role.ADMIN,
       mustChangePassword: false,
+      phone: '+375297515033',
     },
   });
 
@@ -56,6 +57,7 @@ async function main() {
       password: managerPassword,
       role: Role.MANAGER,
       mustChangePassword: false,
+      phone: '+375292222222',
     },
   });
 

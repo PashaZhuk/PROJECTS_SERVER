@@ -7,21 +7,28 @@ const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT),
   secure: process.env.SMTP_SECURE === 'true',
-  debug: true, 
-  logger: true,
+  connectionTimeout: 5000, // 5 сек таймаут — не блокируем старт сервера
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
 
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('SMTP Connection Error:', error);
-  } else {
-    console.log('Server is ready to take our messages');
-  }
-});
+// Проверка SMTP с таймаутом — не блокируем старт
+const verifyWithTimeout = (timeoutMs = 5000) => {
+  const timeout = setTimeout(() => {
+    console.warn('⚠️ SMTP verify timeout — email может не работать');
+  }, timeoutMs);
+  transporter.verify((error, success) => {
+    clearTimeout(timeout);
+    if (error) {
+      console.warn('⚠️ SMTP недоступен:', error.message);
+    } else {
+      console.log('📧 SMTP готов');
+    }
+  });
+};
+verifyWithTimeout();
 
 interface Attachment {
   filename: string;

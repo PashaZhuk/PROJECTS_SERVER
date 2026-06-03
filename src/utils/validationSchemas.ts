@@ -15,16 +15,16 @@ export const registerSchema = z.object({
   email: z.string().regex(/@/, 'Некорректный email'),
   password: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
   name: z.string().optional(),
-  role: z.enum(['USER', 'MANAGER']).optional(),
+  role: z.enum(['USER', 'MANAGER', 'ADMIN']).optional(),
   companyName: z.string().optional(),
   unp: z.string().optional(),
-  phone: z.string().optional(),
+  phone: z.string().regex(/^\+375\d{9}$/, 'Формат: +375XXXXXXXXX'),
 }).superRefine((data, ctx) => {
   if (data.role === 'MANAGER' && !data.name) {
     ctx.addIssue({ code: 'custom', path: ['name'], message: 'Для менеджера обязательно ФИО' });
   }
-  if (data.role === 'USER' && (!data.companyName || !data.unp || !data.phone)) {
-    ctx.addIssue({ code: 'custom', path: ['companyName'], message: 'Для партнера обязательны название компании, УНП и телефон' });
+  if (data.role === 'USER' && (!data.companyName || !data.unp)) {
+    ctx.addIssue({ code: 'custom', path: ['companyName'], message: 'Для партнера обязательны название компании и УНП' });
   }
 });
 
