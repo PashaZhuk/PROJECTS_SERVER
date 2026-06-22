@@ -70,8 +70,9 @@ async function getTableInfo(name: string): Promise<TableInfo> {
            AND tc.constraint_type = 'PRIMARY KEY'
        )) as is_pk
      FROM information_schema.columns c
-     WHERE c.table_name = '${name}' AND c.table_schema = 'public'
-     ORDER BY c.ordinal_position`
+     WHERE c.table_name = $1 AND c.table_schema = 'public'
+     ORDER BY c.ordinal_position`,
+    name
   );
 
   return {
@@ -132,23 +133,30 @@ export async function getTableData(
 
   // Строим WHERE для поиска
   let whereClause = '';
+  let queryParams: string[] = [];
   const searchableCols = info.columns.filter(c => isSearchableType(c.type) && !['password'].includes(c.name));
   if (search && searchableCols.length > 0) {
+    const searchPattern = `%${search}%`;
     const conditions = searchableCols
-      .map(c => `CAST("${c.name}" AS text) ILIKE '%${search.replace(/'/g, "''")}%'`)
+      .map(c => `CAST("${c.name}" AS text) ILIKE $1`)
       .join(' OR ');
     whereClause = `WHERE ${conditions}`;
+    queryParams.push(searchPattern);
   }
 
   // Total count
   const countRows = await prisma.$queryRawUnsafe<CountRow[]>(
-    `SELECT COUNT(*) as count FROM "${tableName}" ${whereClause}`
+    `SELECT COUNT(*) as count FROM "${tableName}" ${whereClause}`,
+    ...queryParams
   );
   const total = Number(countRows[0]?.count ?? 0);
 
   // Данные
   const data = await prisma.$queryRawUnsafe<Record<string, unknown>[]>(
-    `SELECT * FROM "${tableName}" ${whereClause} ORDER BY "${pkName}" DESC LIMIT ${perPage} OFFSET ${offset}`
+    `SELECT * FROM "${tableName}" ${whereClause} ORDER BY "${pkName}" DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
+    ...queryParams,
+    perPage,
+    offset
   );
 
   return { data, total, page, perPage, columns: info.columns };
