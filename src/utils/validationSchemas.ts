@@ -108,6 +108,28 @@ export const updateProjectStatusSchema = z.object({
 });
 
 // ----------------------
+// EQUIPMENT SCHEMAS
+// ----------------------
+
+const equipmentStatus = z.enum(['in_stock', 'issued', 'sold', 'repair', 'decommissioned']);
+
+export const createEquipmentSchema = z.object({
+  category: z.string().min(1, 'Категория обязательна'),
+  name: z.string().min(1, 'Наименование обязательно'),
+  accountingType: z.string().optional(),
+  purpose: z.string().optional(),
+  serialNumber: z.string().optional(),
+  macAddress: z.string().optional(),
+  issueDate: z.string().optional(),
+  issuedTo: z.string().optional(),
+  issuedToWhere: z.string().optional(),
+  status: equipmentStatus.optional().default('in_stock'),
+  comments: z.string().optional(),
+});
+
+export const updateEquipmentSchema = createEquipmentSchema.partial();
+
+// ----------------------
 // CHAT SCHEMAS
 // ----------------------
 

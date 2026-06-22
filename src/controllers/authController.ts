@@ -30,7 +30,7 @@ export const login = asyncHandler(async (req: any, res: Response) => {
     if (result.attemptsLeft !== undefined) return sendError(res, 401, 'Неверный email или пароль', { attemptsLeft: result.attemptsLeft });
     return sendError(res, 401, 'Неверный email или пароль');
   }
-  sendSuccess(res, { user: result.user, token: result.token });
+  sendSuccess(res, { user: result.user });
 });
 
 export const send2FACode = asyncHandler(async (req: any, res: Response) => {
@@ -47,7 +47,7 @@ export const verify2FACode = asyncHandler(async (req: any, res: Response) => {
     if (result.attemptsLeft !== undefined) return sendError(res, 401, 'Неверный код', { attemptsLeft: result.attemptsLeft });
     return sendError(res, 401, 'Неверный код');
   }
-  sendSuccess(res, { user: result.user, token: result.token }, '2FA успешно пройдена');
+  sendSuccess(res, { user: result.user }, '2FA успешно пройдена');
 });
 
 export const logout = asyncHandler(async (req: any, res: Response) => {

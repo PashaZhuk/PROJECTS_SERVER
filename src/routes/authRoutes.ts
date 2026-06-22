@@ -19,7 +19,9 @@ router.get('/profile', authMiddleware, getProfile);
 router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 router.post('/change-password', authMiddleware, changePassword);
-router.post('/refresh', refresh);
+// Rate limit для refresh: 10 запросов в минуту (на случай бага в клиенте)
+const refreshLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { success: false, error: 'Слишком много запросов. Попробуйте через минуту.' } });
+router.post('/refresh', refreshLimiter, refresh);
 
 // Rate limit для 2FA: 3 запроса/мин на отправку (app-level блокировка для verify)
 const twoFASendLimiter = rateLimit({ windowMs: 60 * 1000, max: 3, message: { success: false, error: 'Слишком много запросов кода. Подождите минуту.' } });
