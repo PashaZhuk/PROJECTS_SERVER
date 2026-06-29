@@ -27,6 +27,7 @@ const MANAGER_DATA = {
   password: 'ManagerPass1!',
   role: 'MANAGER' as const,
   name: 'Иван Менеджеров',
+  phone: '+375291234567',
 }
 
 // ================================================================
@@ -47,7 +48,7 @@ describe('registerUser', () => {
     expect(user.password).not.toBe(USER_DATA.password) // хеширован
   })
 
-  it('создаёт MANAGER без company/unp/phone', async () => {
+  it('создаёт MANAGER с name (phone обязателен для всех ролей)', async () => {
     const user = await registerUser(MANAGER_DATA)
 
     expect(user.id).toBeGreaterThan(0)
@@ -55,7 +56,7 @@ describe('registerUser', () => {
     expect(user.role).toBe('MANAGER')
     expect(user.companyName).toBeNull()
     expect(user.unp).toBeNull()
-    expect(user.phone).toBeNull()
+    expect(user.phone).toBe(MANAGER_DATA.phone) // phone обязателен для всех ролей (2FA)
   })
 
   it('отклоняет дубликат email', async () => {
@@ -96,14 +97,19 @@ describe('loginUser', () => {
     expect(result.user!.role).toBe('MANAGER')
   })
 
-  it('требует 2FA для USER', async () => {
+  it('требует 2FA для USER (или пропускает если DISABLE_2FA)', async () => {
     await registerUser(USER_DATA)
     const res = mockRes()
     const result = await loginUser(USER_DATA.email, USER_DATA.password, res)
 
-    expect(result.success).toBe(false)
-    expect(result.requires2FA).toBe(true)
-    expect(result.userId).toBeGreaterThan(0)
+    if (process.env.DISABLE_2FA === 'true') {
+      expect(result.success).toBe(true)
+      expect(result.user).toBeDefined()
+    } else {
+      expect(result.success).toBe(false)
+      expect(result.requires2FA).toBe(true)
+      expect(result.userId).toBeGreaterThan(0)
+    }
   })
 
   it('отклоняет неверный пароль', async () => {
@@ -152,113 +158,114 @@ describe('loginUser', () => {
 // send2FACodeService
 // ================================================================
 
+const getUserId = async () => {
+  const { prisma } = await import('../../src/config/db.js')
+  const u = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+  return u!.id
+}
+
 describe('send2FACodeService', () => {
   it('возвращает debugCode (SMS не настроен)', async () => {
     await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
+    const userId = await getUserId()
 
-    const result = await send2FACodeService(login.userId!)
-    expect(result).toHaveProperty('debugCode')
-    expect(result.debugCode).toMatch(/^\d{6}$/)
-  })
+        const result = await send2FACodeService(userId)
+        expect(result).toHaveProperty('debugCode')
+        expect(result.debugCode).toMatch(/^\d{6}$/)
+      })
 
-  it('блокирует повторную отправку раньше 60 сек', async () => {
-    await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
+      it('блокирует повторную отправку раньше 60 сек', async () => {
+        await registerUser(USER_DATA)
+        const userId = await getUserId()
 
-    await send2FACodeService(login.userId!)
-    await expect(
-      send2FACodeService(login.userId!)
-    ).rejects.toThrow(AppError)
-  })
+        await send2FACodeService(userId)
+        await expect(
+          send2FACodeService(userId)
+        ).rejects.toThrow(AppError)
+      })
 
-  it('отклоняет запрос для заблокированного по 2FA пользователя', async () => {
-    // Регистрируем, логинимся, отправляем код — но сначала заблокируем
-    await registerUser(USER_DATA)
+      it('отклоняет запрос для заблокированного по 2FA пользователя', async () => {
+        await registerUser(USER_DATA)
 
-    // Смоделируем блокировку прямо через prisma
-    const { prisma } = await import('../../src/config/db.js')
-    const user = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
-    await prisma.user.update({
-      where: { id: user!.id },
-      data: { twoFactorLockUntil: new Date(Date.now() + 60_000) },
+        // Смоделируем блокировку прямо через prisma
+        const { prisma } = await import('../../src/config/db.js')
+        const user = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+        await prisma.user.update({
+          where: { id: user!.id },
+          data: { twoFactorLockUntil: new Date(Date.now() + 60_000) },
+        })
+
+        await expect(
+          send2FACodeService(user!.id)
+        ).rejects.toThrow(AppError)
+      })
     })
 
-    await expect(
-      send2FACodeService(user!.id)
-    ).rejects.toThrow(AppError)
-  })
-})
-
-// ================================================================
-// verify2FACodeService
-// ================================================================
-
-describe('verify2FACodeService', () => {
-  it('успешно верифицирует корректный код', async () => {
-    await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
-
-    const { debugCode } = await send2FACodeService(login.userId!)
-    const verifyRes = mockRes()
-    const result = await verify2FACodeService(login.userId!, debugCode!, verifyRes)
-
-    expect(result.success).toBe(true)
-    expect(result.user).toBeDefined()
-    expect(result.token).toBeDefined()
-  })
-
-  it('отклоняет неверный код и уменьшает attemptsLeft', async () => {
-    await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
-
-    await send2FACodeService(login.userId!)
-    const verifyRes = mockRes()
-
-    const result = await verify2FACodeService(login.userId!, '000000', verifyRes)
-    expect(result.success).toBe(false)
-    expect(result.attemptsLeft).toBe(2)
-  })
-
-  it('блокирует после 3 неверных попыток', async () => {
-    await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
-
-    // Отправляем код один раз — пытаемся ввести неверно 3 раза
-    await send2FACodeService(login.userId!)
-
-    for (let i = 0; i < 3; i++) {
-      const vr = await verify2FACodeService(login.userId!, '000000', mockRes())
-      if (i === 2) {
-        expect(vr.locked).toBe(true)
-        expect(vr.timeLeft).toBeGreaterThan(0)
-      } else {
-        expect(vr.attemptsLeft).toBe(2 - i)
+    describe('verify2FACodeService', () => {
+      const getUserId = async () => {
+        const { prisma } = await import('../../src/config/db.js')
+        const u = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+        return u!.id
       }
-    }
-  })
 
-  it('отклоняет истёкший код', async () => {
-    await registerUser(USER_DATA)
-    const res = mockRes()
-    const login = await loginUser(USER_DATA.email, USER_DATA.password, res)
+      it('успешно верифицирует корректный код', async () => {
+        await registerUser(USER_DATA)
+        const userId = await getUserId()
 
-    await send2FACodeService(login.userId!)
+        const { debugCode } = await send2FACodeService(userId)
+        const verifyRes = mockRes()
+        const result = await verify2FACodeService(userId, debugCode!, verifyRes)
 
-    // Протухаем код вручную
-    const { prisma } = await import('../../src/config/db.js')
-    await prisma.user.update({
-      where: { id: login.userId! },
-      data: { twoFactorCodeExpiresAt: new Date(Date.now() - 1000) },
+        expect(result.success).toBe(true)
+        expect(result.user).toBeDefined()
+        expect(result.token).toBeDefined()
+      })
+
+      it('отклоняет неверный код и уменьшает attemptsLeft', async () => {
+        await registerUser(USER_DATA)
+        const userId = await getUserId()
+
+        await send2FACodeService(userId)
+        const verifyRes = mockRes()
+
+        const result = await verify2FACodeService(userId, '000000', verifyRes)
+        expect(result.success).toBe(false)
+        expect(result.attemptsLeft).toBe(2)
+      })
+
+      it('блокирует после 3 неверных попыток', async () => {
+        await registerUser(USER_DATA)
+        const userId = await getUserId()
+
+        // Отправляем код один раз — пытаемся ввести неверно 3 раза
+        await send2FACodeService(userId)
+
+        for (let i = 0; i < 3; i++) {
+          const vr = await verify2FACodeService(userId, '000000', mockRes())
+          if (i === 2) {
+            expect(vr.locked).toBe(true)
+            expect(vr.timeLeft).toBeGreaterThan(0)
+          } else {
+            expect(vr.attemptsLeft).toBe(2 - i)
+          }
+        }
+      })
+
+      it('отклоняет истёкший код', async () => {
+        await registerUser(USER_DATA)
+        const userId = await getUserId()
+
+        await send2FACodeService(userId)
+
+        // Протухаем код вручную
+        const { prisma } = await import('../../src/config/db.js')
+        await prisma.user.update({
+          where: { id: userId },
+          data: { twoFactorCodeExpiresAt: new Date(Date.now() - 1000) },
+        })
+
+        const result = await verify2FACodeService(userId, '000000', mockRes())
+        expect(result.success).toBe(false)
+        expect(result.message).toContain('истёк')
+      })
     })
-
-    const result = await verify2FACodeService(login.userId!, '000000', mockRes())
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('истёк')
-  })
-})

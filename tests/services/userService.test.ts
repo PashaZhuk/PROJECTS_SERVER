@@ -18,6 +18,7 @@ const USER_DATA = {
 }
 const MANAGER_DATA = {
   email: 'm-test@test.com', password: 'Pass123!', role: 'MANAGER' as const, name: 'Менеджер Тест',
+  phone: '+375****4501',
 }
 
 let userId: number

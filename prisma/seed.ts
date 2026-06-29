@@ -162,6 +162,17 @@ async function main() {
   });
   console.log('✅ Брендинг создан');
 
+  // ─── Лозунг дня ───
+  await prisma.siteSetting.upsert({
+    where: { key: 'daily-motto' },
+    create: {
+      key: 'daily-motto',
+      value: 'Понедельник — день тяжёлый, а B2B портал — лёгкий!',
+    },
+    update: {},
+  });
+  console.log('✅ Лозунг дня создан');
+
   // ─── Тестовое оборудование ───
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE "TestEquipment" RESTART IDENTITY CASCADE;`);
 

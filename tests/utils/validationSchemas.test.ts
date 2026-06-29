@@ -46,9 +46,10 @@ describe('registerSchema', () => {
     expect(r.success).toBe(true)
   })
 
-  it('валидирует MANAGER с name', () => {
+  it('валидирует MANAGER с name и phone', () => {
     const r = safeParse(registerSchema, {
       email: 'mgr@test.com', password: '123456', role: 'MANAGER', name: 'Иван',
+      phone: '+375291234567',
     })
     expect(r.success).toBe(true)
   })

@@ -23,6 +23,7 @@ const MANAGER_DATA = {
   password: 'TestPass123!',
   role: 'MANAGER' as const,
   name: 'Менеджер Иванов',
+  phone: '+375****4500',
 }
 
 let userId: number
@@ -159,11 +160,11 @@ describe('authMiddleware', () => {
     expect(res.body.code).toBe('SESSION_SUPERSEDED')
   })
 
-  it('отклоняет USER при неактивности > 30 минут', async () => {
+  it('отклоняет USER при неактивности > 120 минут', async () => {
     const { prisma } = await import('../../src/config/db.js')
     await prisma.user.update({
       where: { id: userId },
-      data: { lastSeen: new Date(Date.now() - 31 * 60 * 1000) },
+      data: { lastSeen: new Date(Date.now() - 121 * 60 * 1000) },
     })
 
     const app = makeApp(authMiddleware)

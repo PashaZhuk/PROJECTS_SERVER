@@ -158,6 +158,29 @@ export const loginUser = async (
     emitUserLockStatus(user.id, { lockUntil: null, failedLoginAttempts: 0 });
   }
 
+  // Режим разработки: пропускаем 2FA
+  if (process.env.DISABLE_2FA === 'true') {
+    logger.info('2FA bypassed (DISABLE_2FA=true)', enrichLogMeta());
+    const sessionId = uuidv4();
+    const { accessToken } = await generateTokens(user.id, sessionId, res);
+    const io = getIo();
+    if (io && user.currentSessionId && user.currentSessionId !== sessionId) {
+      io.to(`user_${user.id}`).emit('session_superseded');
+      logger.info('Session superseded', enrichLogMeta());
+    }
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { currentSessionId: sessionId, lastSeen: new Date(), twoFactorVerified: false },
+    });
+    await emitStatsUpdate();
+    if (io && user.role !== 'USER') io.to('admin_room').emit('user:online', user.id);
+    return {
+      success: true,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, mustChangePassword: user.mustChangePassword, companyName: user.companyName },
+      token: accessToken,
+    };
+  }
+
   // Все роли проходят 2FA
   logger.info('2FA required', enrichLogMeta());
   return { success: false, requires2FA: true, userId: user.id, email: user.email };
