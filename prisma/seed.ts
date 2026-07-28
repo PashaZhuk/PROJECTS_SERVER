@@ -184,9 +184,10 @@ async function main() {
   // ─── Демо-новости ───
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE "News" RESTART IDENTITY CASCADE;`);
 
-  await prisma.news.create({ data: { title: 'Новая прошивка Yealink V86', link: 'https://yealink.com', imageUrl: null } });
-  await prisma.news.create({ data: { title: 'Обновление прайс-листа', link: 'https://google.com', imageUrl: null } });
-  console.log('✅ Добавлено 2 демо-новости');
+  await prisma.news.create({ data: { title: 'Новая прошивка Yealink V86', content: 'Вышло обновление прошивки для телефонов Yealink серии T4U. Версия V86 включает исправления безопасности и улучшения производительности.', link: 'https://yealink.com', category: 'NOMENCLATURE' } });
+  await prisma.news.create({ data: { title: 'Обновление прайс-листа', content: 'Обновлён прайс-лист на оборудование Yealink и Grandstream. Новые цены действуют с 1 августа 2026 года.', link: 'https://google.com', category: 'NEWS' } });
+  await prisma.news.create({ data: { title: 'Демо версии устройств', content: 'Доступны демо-версии новых IP-телефонов Yealink VP59 для тестирования в вашем офисе.', link: null, category: 'DEMO' } });
+  console.log('✅ Добавлено 3 демо-новости');
 }
 
 main()
