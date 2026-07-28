@@ -61,6 +61,18 @@ const options: swaggerJsdoc.Options = {
             password: { type: 'string', minLength: 6 },
           },
         },
+        News: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            title: { type: 'string' },
+            content: { type: 'string' },
+            link: { type: 'string', nullable: true },
+            category: { type: 'string', enum: ['NEWS', 'NOMENCLATURE', 'DEMO'] },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
+          },
+        },
       },
     },
     paths: {
@@ -461,8 +473,51 @@ const options: swaggerJsdoc.Options = {
             { name: 'search', in: 'query', schema: { type: 'string' } },
             { name: 'limit', in: 'query', schema: { type: 'integer' } },
             { name: 'date', in: 'query', schema: { type: 'string', format: 'date' } },
+            { name: 'dateFrom', in: 'query', schema: { type: 'string', format: 'date' } },
+            { name: 'dateTo', in: 'query', schema: { type: 'string', format: 'date' } },
           ],
           responses: { '200': { description: 'Логи' } },
+        },
+      },
+      '/admin/logs/download': {
+        get: {
+          tags: ['Admin'],
+          summary: 'Скачать логи (JSON)',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            { name: 'dateFrom', in: 'query', required: true, schema: { type: 'string', format: 'date' } },
+            { name: 'dateTo', in: 'query', required: true, schema: { type: 'string', format: 'date' } },
+            { name: 'level', in: 'query', schema: { type: 'string', enum: ['info', 'warn', 'error'] } },
+          ],
+          responses: { '200': { description: 'Файл логов', content: { 'application/octet-stream': {} } } },
+        },
+      },
+      '/admin/settings': {
+        get: {
+          tags: ['Admin'],
+          summary: 'Все настройки портала',
+          security: [{ cookieAuth: [] }],
+          responses: { '200': { description: 'Список настроек' } },
+        },
+      },
+      '/admin/settings/{key}': {
+        get: {
+          tags: ['Admin'],
+          summary: 'Получить настройку по ключу',
+          security: [{ cookieAuth: [] }],
+          parameters: [{ name: 'key', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': { description: 'Значение настройки' } },
+        },
+        put: {
+          tags: ['Admin'],
+          summary: 'Обновить настройку',
+          security: [{ cookieAuth: [] }],
+          parameters: [{ name: 'key', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object' } } },
+          },
+          responses: { '200': { description: 'Настройка обновлена' } },
         },
       },
       '/admin/db/tables': {
@@ -505,12 +560,32 @@ const options: swaggerJsdoc.Options = {
           responses: { '200': { description: 'Бэкап создан' } },
         },
       },
+      '/admin/backup/upload': {
+        post: {
+          tags: ['Admin', 'Backup'],
+          summary: 'Загрузить бэкап (multipart)',
+          security: [{ cookieAuth: [] }],
+          requestBody: {
+            content: { 'multipart/form-data': { schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } } } } },
+          },
+          responses: { '200': { description: 'Бэкап загружен' } },
+        },
+      },
       '/admin/backup/list': {
         get: {
           tags: ['Admin', 'Backup'],
           summary: 'Список бэкапов',
           security: [{ cookieAuth: [] }],
           responses: { '200': { description: 'Список файлов' } },
+        },
+      },
+      '/admin/backup/{filename}': {
+        delete: {
+          tags: ['Admin', 'Backup'],
+          summary: 'Удалить бэкап',
+          security: [{ cookieAuth: [] }],
+          parameters: [{ name: 'filename', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': { description: 'Бэкап удалён' } },
         },
       },
       '/admin/backup/download/{filename}': {
@@ -648,10 +723,50 @@ const options: swaggerJsdoc.Options = {
           tags: ['Manager', 'News'],
           summary: 'Создать новость',
           security: [{ cookieAuth: [] }],
-          responses: { '201': { description: 'Новость создана' } },
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['title', 'content'],
+                  properties: {
+                    title: { type: 'string', description: 'Заголовок (обяз)' },
+                    content: { type: 'string', description: 'Текст новости (обяз)' },
+                    link: { type: 'string', description: 'Ссылка (опционально)' },
+                    category: { type: 'string', enum: ['NEWS', 'NOMENCLATURE', 'DEMO'], default: 'NEWS' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '201': { description: 'Новость создана' }, '400': { description: 'Нет title или content' } },
         },
       },
       '/manager/news/{id}': {
+        put: {
+          tags: ['Manager', 'News'],
+          summary: 'Редактировать новость',
+          security: [{ cookieAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    title: { type: 'string' },
+                    content: { type: 'string' },
+                    link: { type: 'string' },
+                    category: { type: 'string', enum: ['NEWS', 'NOMENCLATURE', 'DEMO'] },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Новость обновлена' } },
+        },
         delete: {
           tags: ['Manager', 'News'],
           summary: 'Удалить новость',
@@ -683,8 +798,12 @@ const options: swaggerJsdoc.Options = {
       '/news': {
         get: {
           tags: ['Public'],
-          summary: 'Публичные новости',
-          responses: { '200': { description: 'Новости' } },
+          summary: 'Новости (фильтр по категории)',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            { name: 'category', in: 'query', schema: { type: 'string', enum: ['NEWS', 'NOMENCLATURE', 'DEMO'] } },
+          ],
+          responses: { '200': { description: 'Список новостей (orderBy: createdAt desc)' } },
         },
       },
       '/settings/{key}': {
