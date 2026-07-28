@@ -29,6 +29,12 @@ enum ProjectStatus {
   CLOSED
 }
 
+enum NewsCategory {
+  NEWS         // Новости портала (существующий раздел)
+  NOMENCLATURE // Новинки номенклатуры
+  DEMO         // Новинки демо
+}
+
 model Company {
   id         Int      @id @default(autoincrement())
   name       String   @unique
@@ -182,12 +188,15 @@ model TestEquipment {
 }
 
 model News {
-  id        Int      @id @default(autoincrement())
+  id        Int         @id @default(autoincrement())
   title     String
-  link      String
-  imageUrl  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  content   String
+  link      String?
+  category  NewsCategory @default(NEWS)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([category])
 }
 
 model BroadcastLog {

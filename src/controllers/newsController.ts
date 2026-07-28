@@ -3,24 +3,49 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { getNewsList, createNews, deleteNews, updateNews } from '../services/newsService.js';
 import { logEvent } from '../services/eventLogService.js';
+import { NewsCategory } from '../../generated/prisma/enums.js';
 
-export const listNews = asyncHandler(async (_req: Request, res: Response) => {
-  const news = await getNewsList();
+const VALID_CATEGORIES = ['NEWS', 'NOMENCLATURE', 'DEMO'] as const;
+
+function parseCategory(val: unknown): NewsCategory | undefined {
+  if (typeof val === 'string' && VALID_CATEGORIES.includes(val as any)) {
+    return val as NewsCategory;
+  }
+  return undefined;
+}
+
+/** GET /api/news?category=NEWS|NOMENCLATURE|DEMO — публичный (нужен auth) */
+export const listNews = asyncHandler(async (req: Request, res: Response) => {
+  const category = parseCategory(req.query.category);
+  const news = await getNewsList(category);
   sendSuccess(res, news);
 });
 
+/** POST /api/manager/news — создать (manager/admin) */
 export const addNews = asyncHandler(async (req: Request, res: Response) => {
-  const { title, link, imageUrl } = req.body || {};
-  if (!title || !link) {
-    sendError(res, 400, 'Необходимо указать title и link');
+  const { title, content, link, category } = req.body || {};
+  if (!title || !content) {
+    sendError(res, 400, 'Необходимо указать title и content');
     return;
   }
-  const item = await createNews({ title, link, imageUrl });
+  const item = await createNews({
+    title,
+    content,
+    link: link || undefined,
+    category: parseCategory(category),
+  });
   const userId = (req as any).user?.id;
-  logEvent({ action: 'news_added', description: `Добавлена новость: ${title}`, entityType: 'news', entityId: item.id, userId });
+  logEvent({
+    action: 'news_added',
+    description: `Добавлена новость: ${title}`,
+    entityType: 'news',
+    entityId: item.id,
+    userId,
+  });
   sendSuccess(res, item, 'Новость добавлена');
 });
 
+/** DELETE /api/manager/news/:id — удалить (manager/admin) */
 export const removeNews = asyncHandler(async (req: Request, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
@@ -30,17 +55,46 @@ export const removeNews = asyncHandler(async (req: Request, res: Response) => {
   }
   await deleteNews(id);
   const userId = (req as any).user?.id;
-  logEvent({ action: 'news_deleted', description: `Удалена новость #${id}`, entityType: 'news', entityId: id, userId });
+  logEvent({
+    action: 'news_deleted',
+    description: `Удалена новость #${id}`,
+    entityType: 'news',
+    entityId: id,
+    userId,
+  });
   sendSuccess(res, undefined, 'Новость удалена');
 });
 
+/** PUT /api/manager/news/:id — редактировать (manager/admin) */
 export const editNews = asyncHandler(async (req: Request, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
-  if (isNaN(id)) { sendError(res, 400, 'Некорректный ID'); return; }
-  const { title, link, imageUrl } = req.body || {};
+  if (isNaN(id)) {
+    sendError(res, 400, 'Некорректный ID');
+    return;
+  }
+  const { title, content, link, category } = req.body || {};
+  if (title !== undefined && !title) {
+    sendError(res, 400, 'title не может быть пустым');
+    return;
+  }
+  if (content !== undefined && !content) {
+    sendError(res, 400, 'content не может быть пустым');
+    return;
+  }
   const userId = (req as any).user?.id;
-  const item = await updateNews(id, { title, link, imageUrl });
-  logEvent({ action: 'news_edited', description: `Изменена новость: ${title || item.title}`, entityType: 'news', entityId: item.id, userId });
+  const item = await updateNews(id, {
+    title,
+    content,
+    link: link || undefined,
+    category: parseCategory(category),
+  });
+  logEvent({
+    action: 'news_edited',
+    description: `Изменена новость: ${title || item.title}`,
+    entityType: 'news',
+    entityId: item.id,
+    userId,
+  });
   sendSuccess(res, item, 'Новость обновлена');
 });
