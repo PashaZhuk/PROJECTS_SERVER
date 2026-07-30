@@ -793,6 +793,92 @@ const options: swaggerJsdoc.Options = {
       },
 
       // ========================
+      // 1C INTEGRATION
+      // ========================
+      '/integration/partner': {
+        get: {
+          tags: ['1C Integration'],
+          summary: 'Поиск партнёра по УНП (прокси к 1С)',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            { name: 'unp', in: 'query', required: true, schema: { type: 'string', pattern: '^\\d{9}$', description: '9 цифр УНП' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Данные партнёра',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      unp: { type: 'string' },
+                      phoneB2B: { type: 'string' },
+                      emailB2B: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { description: 'Невалидный УНП' },
+            '502': { description: 'Ошибка 1С' },
+          },
+        },
+      },
+      '/integration/partner-finance': {
+        get: {
+          tags: ['1C Integration'],
+          summary: 'Финансовая информация партнёра (прокси к 1С)',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            { name: 'unp', in: 'query', required: true, schema: { type: 'string', pattern: '^\\d{9}$' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Финансовые данные',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      unp: { type: 'string' },
+                      partnerName: { type: 'string' },
+                      totalOpenShipped: { type: 'number' },
+                      totalOverdue: { type: 'number' },
+                      totalPrepayment: { type: 'number' },
+                      dataAsOf: { type: 'string', format: 'date-time' },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { description: 'Невалидный УНП' },
+            '502': { description: 'Ошибка 1С' },
+          },
+        },
+      },
+      '/integration/reconciliation-statement': {
+        get: {
+          tags: ['1C Integration'],
+          summary: 'Скачать акт сверки (прокси к 1С)',
+          security: [{ cookieAuth: [] }],
+          parameters: [
+            { name: 'unp', in: 'query', required: true, schema: { type: 'string', pattern: '^\\d{9}$' } },
+            { name: 'year', in: 'query', required: false, schema: { type: 'integer', description: 'Год для квартального акта' } },
+            { name: 'quarter', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 4, description: 'Номер квартала (1-4)' } },
+          ],
+          responses: {
+            '200': {
+              description: 'PDF/docx файл акта сверки',
+              content: { 'application/octet-stream': {} },
+            },
+            '400': { description: 'Невалидные параметры' },
+            '502': { description: 'Ошибка 1С' },
+          },
+        },
+      },
+
+      // ========================
       // PUBLIC
       // ========================
       '/news': {
