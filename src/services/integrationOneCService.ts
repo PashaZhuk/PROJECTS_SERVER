@@ -127,10 +127,91 @@ export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse>
 
 /**
  * Получить финансовую информацию партнёра из 1С.
- *
- * GET /api/integration/partner-finance?unp=
  */
 export async function getPartnerFinance(unp: string): Promise<OneCFinanceResponse> {
   const url = `${ONEC_BASE_URL}/partner-finance?unp=${encodeURIComponent(unp)}`;
   return fetchFromOneC(url, parseFinanceResponse);
+}
+
+// --- Reconciliation statement ---
+
+export interface StatementResult {
+  /** Бинарное содержимое файла */
+  data: ArrayBuffer;
+  /** Content-Type из ответа 1С */
+  contentType: string;
+  /** Предложенное имя файла */
+  filename: string;
+}
+
+/**
+ * Получить акт сверки из 1С.
+ *
+ * @param unp — УНП партнёра
+ * @param year — опционально: год для квартального акта
+ * @param quarter — опционально: номер квартала (1-4)
+ */
+export async function getReconciliationStatement(
+  unp: string,
+  year?: number,
+  quarter?: number,
+): Promise<StatementResult> {
+  let url = `${ONEC_BASE_URL}/reconciliation-statement?unp=${encodeURIComponent(unp)}`;
+  if (year !== undefined && quarter !== undefined) {
+    url += `&year=${year}&quarter=${quarter}`;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: basicAuthHeader(),
+      signal: AbortSignal.timeout(30_000), // 30 сек — файл может генерироваться
+    });
+  } catch (err) {
+    if (err instanceof TypeError && (err as Error).message?.includes('fetch')) {
+      throw new AppError(502, '1C server is unavailable');
+    }
+    if (err instanceof DOMException && (err as Error).name === 'TimeoutError') {
+      throw new AppError(502, '1C server timeout');
+    }
+    throw new AppError(502, `1C connection error: ${(err as Error).message}`);
+  }
+
+  if (!response.ok) {
+    // Пробуем прочитать тело ошибки
+    let errorBody: unknown;
+    try {
+      errorBody = await response.json();
+    } catch {
+      throw new AppError(response.status, '1C error');
+    }
+    handleOneCError(response.status, errorBody);
+  }
+
+  const data = await response.arrayBuffer();
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
+  const disposition = response.headers.get('content-disposition');
+  let filename = 'akt-sverki';
+
+  if (disposition) {
+    const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+    if (match) {
+      filename = decodeURIComponent(match[1]);
+    }
+  }
+
+  // Если расширения нет — добавляем по content-type
+  if (!filename.includes('.')) {
+    const extMap: Record<string, string> = {
+      'application/pdf': '.pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'application/msword': '.doc',
+      'application/vnd.ms-excel': '.xls',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    };
+    filename += extMap[contentType] || '.bin';
+  }
+
+  return { data, contentType, filename };
 }
