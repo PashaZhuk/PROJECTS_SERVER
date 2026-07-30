@@ -196,7 +196,7 @@ export async function getReconciliationStatement(
 
   if (disposition) {
     const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
-    if (match) {
+    if (match && match[1]) {
       filename = decodeURIComponent(match[1]);
     }
   }
