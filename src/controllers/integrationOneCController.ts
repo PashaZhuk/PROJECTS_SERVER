@@ -1,10 +1,16 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { getPartnerByUnp } from '../services/integrationOneCService.js';
-import { sendSuccess } from '../utils/response.js';
+import { sendSuccess, sendError } from '../utils/response.js';
+import { partnerQuerySchema } from '../utils/validationSchemas.js';
 
 export const getPartner = asyncHandler(async (req: Request, res: Response) => {
-  const { unp } = req.query;
-  const data = await getPartnerByUnp(unp as string);
+  // Zod-валидация query params
+  const parsed = partnerQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return sendError(res, 400, 'Invalid UNP');
+  }
+
+  const data = await getPartnerByUnp(parsed.data.unp);
   sendSuccess(res, data);
 });

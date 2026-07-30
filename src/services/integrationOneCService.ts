@@ -16,16 +16,6 @@ export interface OneCPartnerResponse {
   emailB2B: string;
 }
 
-// --- Validation ---
-
-const UNP_REGEX = /^\d{9}$/;
-
-function validateUnp(unp: string | undefined): asserts unp is string {
-  if (!unp || !UNP_REGEX.test(unp)) {
-    throw new AppError(400, 'Invalid UNP');
-  }
-}
-
 // --- Helpers ---
 
 function basicAuthHeader(): Record<string, string> {
@@ -80,13 +70,11 @@ function parsePartnerResponse(body: unknown): OneCPartnerResponse {
  *
  * GET /api/integration/partner?unp=
  *
- * @param unp — 9 цифр УНП
+ * @param unp — 9 цифр УНП (уже провалидировано Zod на уровне контроллера)
  * @returns OneCPartnerResponse
  * @throws AppError (400 / 404 / 502)
  */
 export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse> {
-  validateUnp(unp);
-
   const url = `${ONEC_BASE_URL}/partner?unp=${encodeURIComponent(unp)}`;
 
   let response: Response;

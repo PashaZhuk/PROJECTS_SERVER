@@ -138,6 +138,14 @@ export const sendMessageSchema = z.object({
 });
 
 // ----------------------
+// 1C INTEGRATION SCHEMAS
+// ----------------------
+
+export const partnerQuerySchema = z.object({
+  unp: z.string().regex(/^\d{9}$/, 'УНП должен содержать ровно 9 цифр'),
+});
+
+// ----------------------
 // MIDDLEWARE ВАЛИДАЦИИ
 // ----------------------
 
