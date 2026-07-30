@@ -16,6 +16,15 @@ export interface OneCPartnerResponse {
   emailB2B: string;
 }
 
+export interface OneCFinanceResponse {
+  unp: string;
+  partnerName: string;
+  totalOpenShipped: number;
+  totalOverdue: number;
+  totalPrepayment: number;
+  dataAsOf: string;
+}
+
 // --- Helpers ---
 
 function basicAuthHeader(): Record<string, string> {
@@ -38,22 +47,13 @@ function handleOneCError(status: number, body: unknown): never {
   throw new AppError(status, msg);
 }
 
-/** Распарсить ответ 1С: принимает объект или массив с одним элементом */
+/** Распарсить ответ 1С для partner: принимает объект или массив с одним элементом */
 function parsePartnerResponse(body: unknown): OneCPartnerResponse {
   if (!body || typeof body !== 'object') {
     throw new AppError(502, 'Invalid response format from 1C');
   }
 
-  // 1С может вернуть как объект, так и массив с одним элементом
-  let data: Record<string, unknown>;
-  if (Array.isArray(body)) {
-    if (body.length === 0) {
-      throw new AppError(404, 'Partner not found');
-    }
-    data = body[0] as Record<string, unknown>;
-  } else {
-    data = body as Record<string, unknown>;
-  }
+  const data: Record<string, unknown> = Array.isArray(body) ? body[0] as Record<string, unknown> : body as Record<string, unknown>;
 
   return {
     name: typeof data.name === 'string' ? data.name : '',
@@ -63,20 +63,27 @@ function parsePartnerResponse(body: unknown): OneCPartnerResponse {
   };
 }
 
-// --- Main ---
+/** Распарсить ответ 1С для finance: принимает объект или массив с одним элементом */
+function parseFinanceResponse(body: unknown): OneCFinanceResponse {
+  if (!body || typeof body !== 'object') {
+    throw new AppError(502, 'Invalid response format from 1C');
+  }
 
-/**
- * Получить данные партнёра по УНП из 1С.
- *
- * GET /api/integration/partner?unp=
- *
- * @param unp — 9 цифр УНП (уже провалидировано Zod на уровне контроллера)
- * @returns OneCPartnerResponse
- * @throws AppError (400 / 404 / 502)
- */
-export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse> {
-  const url = `${ONEC_BASE_URL}/partner?unp=${encodeURIComponent(unp)}`;
+  const data: Record<string, unknown> = Array.isArray(body) ? body[0] as Record<string, unknown> : body as Record<string, unknown>;
 
+  return {
+    unp: typeof data.unp === 'string' ? data.unp : '',
+    partnerName: typeof data.partnerName === 'string' ? data.partnerName : '',
+    totalOpenShipped: typeof data.totalOpenShipped === 'number' ? data.totalOpenShipped : 0,
+    totalOverdue: typeof data.totalOverdue === 'number' ? data.totalOverdue : 0,
+    totalPrepayment: typeof data.totalPrepayment === 'number' ? data.totalPrepayment : 0,
+    dataAsOf: typeof data.dataAsOf === 'string' ? data.dataAsOf : new Date().toISOString(),
+  };
+}
+
+// --- Helpers для запросов к 1С ---
+
+async function fetchFromOneC<T>(url: string, parser: (body: unknown) => T): Promise<T> {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -94,7 +101,6 @@ export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse>
     throw new AppError(502, `1C connection error: ${(err as Error).message}`);
   }
 
-  // Читаем тело (может быть JSON или HTML ошибки)
   let body: unknown;
   try {
     body = await response.json();
@@ -106,5 +112,25 @@ export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse>
     handleOneCError(response.status, body);
   }
 
-  return parsePartnerResponse(body);
+  return parser(body);
+}
+
+// --- Main ---
+
+/**
+ * Получить данные партнёра по УНП из 1С.
+ */
+export async function getPartnerByUnp(unp: string): Promise<OneCPartnerResponse> {
+  const url = `${ONEC_BASE_URL}/partner?unp=${encodeURIComponent(unp)}`;
+  return fetchFromOneC(url, parsePartnerResponse);
+}
+
+/**
+ * Получить финансовую информацию партнёра из 1С.
+ *
+ * GET /api/integration/partner-finance?unp=
+ */
+export async function getPartnerFinance(unp: string): Promise<OneCFinanceResponse> {
+  const url = `${ONEC_BASE_URL}/partner-finance?unp=${encodeURIComponent(unp)}`;
+  return fetchFromOneC(url, parseFinanceResponse);
 }
