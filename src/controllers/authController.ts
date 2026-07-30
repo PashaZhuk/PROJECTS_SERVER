@@ -16,7 +16,7 @@ import { sendSuccess, sendError } from '../utils/response.js';
 
 export const register = asyncHandler(async (req: any, res: Response) => {
   const user = await registerUser(req.body, req.logMeta);
-  sendSuccess(res, { user: { id: user.id, name: user.name, email: user.email, role: user.role, companyName: user.companyName } }, 'Пользователь успешно создан', 201);
+  sendSuccess(res, { user: { id: user.id, name: user.name, email: user.email, role: user.role, companyName: user.companyName, unp: user.unp } }, 'Пользователь успешно создан', 201);
 });
 
 export const login = asyncHandler(async (req: any, res: Response) => {
