@@ -87,14 +87,19 @@ describe('registerUser', () => {
 // ================================================================
 
 describe('loginUser', () => {
-  it('пропускает MANAGER без 2FA', async () => {
+  it('пропускает MANAGER без 2FA (или требует 2FA если DISABLE_2FA не задан)', async () => {
     await registerUser(MANAGER_DATA)
     const res = mockRes()
     const result = await loginUser(MANAGER_DATA.email, MANAGER_DATA.password, res)
 
-    expect(result.success).toBe(true)
-    expect(result.user).toBeDefined()
-    expect(result.user!.role).toBe('MANAGER')
+    if (process.env.DISABLE_2FA === 'true') {
+      expect(result.success).toBe(true)
+      expect(result.user).toBeDefined()
+      expect(result.user!.role).toBe('MANAGER')
+    } else {
+      expect(result.success).toBe(false)
+      expect(result.requires2FA).toBe(true)
+    }
   })
 
   it('требует 2FA для USER (или пропускает если DISABLE_2FA)', async () => {
@@ -144,13 +149,18 @@ describe('loginUser', () => {
       await loginUser(MANAGER_DATA.email, 'wrong', res)
     }
 
-    // успешный вход
+    // успешный вход (при DISABLE_2FA=true — bypass, иначе requires2FA)
     const ok = await loginUser(MANAGER_DATA.email, MANAGER_DATA.password, res)
-    expect(ok.success).toBe(true)
-
-    // снова неверный — счётчик сброшен
-    const fail = await loginUser(MANAGER_DATA.email, 'wrong', res)
-    expect(fail.attemptsLeft).toBe(4) // начинаем с 5 заново
+    if (process.env.DISABLE_2FA === 'true') {
+      expect(ok.success).toBe(true)
+      // снова неверный — счётчик сброшен
+      const fail = await loginUser(MANAGER_DATA.email, 'wrong', res)
+      expect(fail.attemptsLeft).toBe(4) // начинаем с 5 заново
+    } else {
+      expect(ok.success).toBe(false)
+      expect(ok.requires2FA).toBe(true)
+      // при 2FA счётчик не сбрасывается до verify, но тест проверяет только сам вход
+    }
   })
 })
 
