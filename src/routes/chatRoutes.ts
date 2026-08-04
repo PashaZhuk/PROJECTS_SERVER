@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { getProjectMessages, sendMessage, markAsRead } from '../controllers/chatController';
 import { authMiddleware } from '../middleware/authMiddleware';
-import { validate, sendMessageSchema } from '../utils/validationSchemas';
+import { validate } from '../middleware/validate';
+import { sendMessageSchema } from '../utils/validationSchemas';
 
 const router = Router();
 

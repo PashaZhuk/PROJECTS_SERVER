@@ -1,8 +1,9 @@
+import type { Request, Response } from 'express';
 import { fetchLogs, fetchLogsRange } from '../services/adminService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/response.js';
 
-export const getLogs = asyncHandler(async (req: any, res: any) => {
+export const getLogs = asyncHandler(async (req: Request, res: Response) => {
   const level = req.query.level as string;
   const search = req.query.search as string;
   const limit = parseInt(req.query.limit as string) || 500;
@@ -25,7 +26,7 @@ export const getLogs = asyncHandler(async (req: any, res: any) => {
   sendSuccess(res, result);
 });
 
-export const downloadLogs = asyncHandler(async (req: any, res: any) => {
+export const downloadLogs = asyncHandler(async (req: Request, res: Response) => {
   const dateFrom = req.query.dateFrom as string;
   const dateTo = req.query.dateTo as string;
   const level = req.query.level as string;

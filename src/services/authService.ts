@@ -1,12 +1,14 @@
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '../config/db.js';
-import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generateAccessToken, setAccessTokenCookie } from '../utils/generateToken.js';
+import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generateAccessToken, setAccessTokenCookie, generatePreAuthToken, setPreAuthCookie, clearPreAuthCookie } from '../utils/generateToken.js';
 import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from './emailService.js';
 import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
 import { sendSms } from './smsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
+import type { LogMeta } from '../types/express.js';
 
 const MAX_2FA_ATTEMPTS = 3;
 const LOCK_DURATION_MS = 15 * 60 * 1000;
@@ -37,7 +39,7 @@ export const registerUser = async (
     companyName?: string;
     phone?: string;
   },
-  logMeta?: any
+  logMeta?: LogMeta
 ) => {
   const { name, email, password, role, unp, companyName, phone } = data;
   const finalName = role === 'MANAGER' && name ? name.trim() : (name?.trim() || null);
@@ -90,7 +92,12 @@ export const registerUser = async (
   }
 
   const user = await prisma.user.create({ data: createData });
-  await sendWelcomeEmailToUser(user.email, user.name || user.companyName || 'Партнер', password);
+  // B18: не ронять регистрацию при сбое email — юзер уже создан, логируем и продолжаем
+  try {
+    await sendWelcomeEmailToUser(user.email, user.name || user.companyName || 'Партнер', password);
+  } catch (emailErr: any) {
+    logger.error('Welcome email failed - user created anyway', { userId: user.id, email: user.email, error: emailErr.message, ...logMeta });
+  }
   logger.info('User registered', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, role: user.role, ...logMeta });
   return user;
 };
@@ -99,7 +106,7 @@ export const loginUser = async (
   email: string,
   password: string,
   res: any,
-  logMeta?: any
+  logMeta?: LogMeta
 ) => {
   const user = await prisma.user.findUnique({ where: { email } });
   const enrichLogMeta = (extra?: any) => {
@@ -182,11 +189,15 @@ export const loginUser = async (
   }
 
   // Все роли проходят 2FA
-  logger.info('2FA required', enrichLogMeta());
-  return { success: false, requires2FA: true, userId: user.id, email: user.email };
+  // B4: устанавливаем короткоживущий preauth токен в httpOnly cookie
+  // вместо передачи userId в ответе API (защита от IDOR)
+  const preAuthToken = generatePreAuthToken(user.id);
+  setPreAuthCookie(preAuthToken, res);
+  logger.info('2FA required, preauth cookie set', enrichLogMeta());
+  return { success: false, requires2FA: true, email: user.email };
 };
 
-export const send2FACodeService = async (userId: number, logMeta?: any) => {
+export const send2FACodeService = async (userId: number, logMeta?: LogMeta): Promise<{ debugCode?: string }> => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
   const enrichLogMeta = (extra?: any) => ({
@@ -215,9 +226,9 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
     }
   }
 
-  // Генерируем 6-значный код
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const codeHash = await bcrypt.hash(code, 6);
+  // Генерируем 6-значный код через CSPRNG (B6)
+  const code = String(crypto.randomInt(100000, 1000000));
+  const codeHash = await bcrypt.hash(code, 10);
   const expiresAt = new Date(Date.now() + CODE_EXPIRY_MS);
 
   await prisma.user.update({
@@ -229,13 +240,19 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
     },
   });
 
+  const isProduction = process.env.NODE_ENV === 'production';
+  // debugCode только в dev-режиме (B1): в проде код никогда не покидает сервер.
+  const returnDebugCode = (reason: string) => {
+    logger.debug(`🔐 2FA CODE for ${user.email}: ${code} (${reason})`, enrichLogMeta());
+    return { debugCode: code };
+  };
+
   // Отправляем SMS
   const phone = user.phone;
   if (!phone) {
     logger.error('У пользователя нет номера телефона для 2FA', enrichLogMeta());
-    // Для дебага всё равно показываем код в консоли
-    console.log(`🔐 2FA CODE for ${user.email}: ${code} (нет телефона)`);
-    return { debugCode: code };
+    if (isProduction) throw new AppError(400, 'У пользователя нет номера телефона для 2FA');
+    return returnDebugCode('нет телефона');
   }
 
   const smsResult = await sendSms(phone, `IPMATIKA: код подтверждения ${code}`);
@@ -245,8 +262,8 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
       smsError: smsResult.error?.description,
       phone: phone.replace(/\d{4}$/, '****'),
     }));
-    console.log(`🔐 2FA CODE for ${user.email}: ${code} (SMS не отправлено: ${smsResult.error?.description})`);
-    return { debugCode: code };
+    if (isProduction) throw new AppError(502, 'Не удалось отправить SMS с кодом подтверждения');
+    return returnDebugCode(`SMS не отправлено: ${smsResult.error?.description}`);
   }
 
   logger.info('2FA code sent via SMS', enrichLogMeta({
@@ -254,12 +271,11 @@ export const send2FACodeService = async (userId: number, logMeta?: any) => {
     phone: phone.replace(/\d{4}$/, '****'),
     expiresAt,
   }));
-  // В debug-режиме возвращаем код для консоли
-  console.log(`🔐 2FA CODE for ${user.email}: ${code} (SMS ID: ${smsResult.messageId})`);
-  return { debugCode: code };
+  if (isProduction) return {};
+  return returnDebugCode(`SMS ID: ${smsResult.messageId}`);
 };
 
-export const verify2FACodeService = async (userId: number, code: string, res: any, logMeta?: any) => {
+export const verify2FACodeService = async (userId: number, code: string, res: any, logMeta?: LogMeta) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
   const enrichLogMeta = (extra?: any) => ({
@@ -342,6 +358,8 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   emitUserLockStatus(user.id, { twoFactorLockUntil: null, twoFactorAttempts: 0 });
   await emitStatsUpdate();
   if (io) io.to('admin_room').emit('user_status_changed', { userId: user.id, lastSeen: new Date() });
+  // B4: очищаем preauth cookie после успешной 2FA
+  clearPreAuthCookie(res);
   logger.info('2FA verification successful', enrichLogMeta());
   return {
     success: true,
@@ -350,7 +368,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   };
 };
 
-export const logoutUser = async (userId: number | undefined, res?: any, logMeta?: any) => {
+export const logoutUser = async (userId: number | undefined, res?: any, logMeta?: LogMeta) => {
   if (userId) {
     const oldDate = new Date(Date.now() - 10 * 60 * 1000);
 
@@ -368,10 +386,14 @@ export const logoutUser = async (userId: number | undefined, res?: any, logMeta?
     logger.info('User logged out', { userId, ...logMeta });
   }
   // Чистим refresh cookie в любом случае
-  if (res) clearRefreshCookie(res);
+  if (res) {
+    clearRefreshCookie(res);
+    // B4: чистим preauth cookie при logout
+    clearPreAuthCookie(res);
+  }
 };
 
-export const forgotPasswordService = async (email: string, logMeta?: any) => {
+export const forgotPasswordService = async (email: string, logMeta?: LogMeta) => {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) return;
   const resetToken = uuidv4();
@@ -387,7 +409,7 @@ export const forgotPasswordService = async (email: string, logMeta?: any) => {
   logger.info('Password reset requested', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };
 
-export const resetPasswordService = async (token: string, newPassword: string, logMeta?: any) => {
+export const resetPasswordService = async (token: string, newPassword: string, logMeta?: LogMeta) => {
   const user = await prisma.user.findFirst({
     where: { resetPasswordToken: token, resetPasswordExpires: { gte: new Date() } },
   });
@@ -401,7 +423,7 @@ export const resetPasswordService = async (token: string, newPassword: string, l
   logger.info('Password reset successfully', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };
 
-export const changePasswordService = async (userId: number, currentPassword: string, newPassword: string, logMeta?: any) => {
+export const changePasswordService = async (userId: number, currentPassword: string, newPassword: string, logMeta?: LogMeta) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
   

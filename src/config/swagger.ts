@@ -77,6 +77,33 @@ const options: swaggerJsdoc.Options = {
     },
     paths: {
       // ========================
+      // SYSTEM
+      // ========================
+      '/health': {
+        get: {
+          tags: ['System'],
+          summary: 'Health-check: статус сервера и БД (S1)',
+          responses: {
+            '200': {
+              description: 'Сервер и БД работают',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      status: { type: 'string', enum: ['ok'] },
+                      db: { type: 'boolean', enum: [true] },
+                      uptime: { type: 'number' },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'БД недоступна (db: false)' },
+          },
+        },
+      },
+      // ========================
       // AUTH
       // ========================
       '/auth/login': {
@@ -89,7 +116,7 @@ const options: swaggerJsdoc.Options = {
           },
           responses: {
             '200': {
-              description: 'Успешный вход. Для USER — 2FA_REQUIRED',
+              description: 'Успешный вход. 2FA_REQUIRED — для всех ролей (обязательна с 03.06.2026). userId НЕ возвращается — сервер ставит preauth cookie',
               content: {
                 'application/json': {
                   schema: {
@@ -100,10 +127,11 @@ const options: swaggerJsdoc.Options = {
                         properties: {
                           success: { type: 'boolean', enum: [true] },
                           status: { type: 'string', enum: ['2FA_REQUIRED'] },
+                          message: { type: 'string' },
                           data: {
                             type: 'object',
                             properties: {
-                              userId: { type: 'integer' },
+                              email: { type: 'string' },
                               requires2FA: { type: 'boolean' },
                             },
                           },
@@ -115,7 +143,7 @@ const options: swaggerJsdoc.Options = {
               },
             },
             '401': { description: 'Неверные учетные данные' },
-            '429': { description: 'Блокировка' },
+            '429': { description: 'Rate limit 10/мин или блокировка аккаунта' },
           },
         },
       },
@@ -176,48 +204,37 @@ const options: swaggerJsdoc.Options = {
       '/auth/refresh': {
         post: {
           tags: ['Auth'],
-          summary: 'Ротация refresh токена',
+          summary: 'Ротация refresh токена (rate limit 10/мин)',
           responses: {
             '200': { description: 'Токен обновлён' },
             '401': { description: 'Невалидный или истёкший токен' },
+            '429': { description: 'Rate limit 10/мин' },
           },
         },
       },
       '/auth/2fa/send': {
         post: {
           tags: ['Auth', '2FA'],
-          summary: 'Отправить 2FA код по SMS',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['userId'],
-                  properties: { userId: { type: 'integer' } },
-                },
-              },
-            },
-          },
+          summary: 'Отправить 2FA код по SMS (B4: userId из preauth cookie, тело пустое)',
           responses: {
-            '200': { description: 'Код отправлен (fallback: debugCode в консоли)' },
-            '429': { description: 'Rate limit или блокировка' },
+            '200': { description: 'Код отправлен. debugCode возвращается только в dev (NODE_ENV !== production)' },
+            '401': { description: 'Preauth-сессия истекла (PREAUTH_EXPIRED)' },
+            '429': { description: 'Rate limit 3/мин или блокировка' },
           },
         },
       },
       '/auth/2fa/verify': {
         post: {
           tags: ['Auth', '2FA'],
-          summary: 'Проверить 2FA код',
+          summary: 'Проверить 2FA код (B4: userId из preauth cookie)',
           requestBody: {
             required: true,
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['userId', 'code'],
+                  required: ['code'],
                   properties: {
-                    userId: { type: 'integer' },
                     code: { type: 'string', minLength: 6, maxLength: 6 },
                   },
                 },
@@ -226,15 +243,15 @@ const options: swaggerJsdoc.Options = {
           },
           responses: {
             '200': { description: '2FA пройдена, токены выданы' },
-            '401': { description: 'Неверный код' },
-            '429': { description: 'Блокировка после 3 попыток' },
+            '401': { description: 'Неверный код или preauth-сессия истекла (PREAUTH_EXPIRED)' },
+            '429': { description: 'Rate limit 3/мин или блокировка после 3 попыток' },
           },
         },
       },
       '/auth/forgot-password': {
         post: {
           tags: ['Auth'],
-          summary: 'Запрос сброса пароля',
+          summary: 'Запрос сброса пароля (rate limit 3/час)',
           requestBody: {
             required: true,
             content: {
@@ -247,7 +264,10 @@ const options: swaggerJsdoc.Options = {
               },
             },
           },
-          responses: { '200': { description: 'Письмо отправлено (если email существует)' } },
+          responses: {
+            '200': { description: 'Письмо отправлено (если email существует)' },
+            '429': { description: 'Rate limit 3/час' },
+          },
         },
       },
       '/auth/reset-password': {

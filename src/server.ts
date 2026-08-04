@@ -6,13 +6,12 @@ import { config } from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import { connectDB } from './config/db.js';
+import { connectDB, disconnectDB } from './config/db.js';
 import { prisma } from './config/db.js';
-import { generateAccessToken } from './utils/generateToken.js';
+import { rotateRefreshToken } from './utils/generateToken.js';
+import { parseCookies } from './utils/cookies.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
@@ -28,8 +27,15 @@ import logger from './utils/logger.js';
 import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
 
 config();
+
+// B9: Fail-fast proverca JWT_SECRET na starte servera
+if (!process.env.JWT_SECRET) {
+  console.error(' FATAL: JWT_SECRET is not defined. Server cannot start.');
+  process.exit(1);
+}
+
 process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled Rejection:', reason);
+  logger.error('Unhandled Rejection:', { reason: String(reason) });
   process.exit(1);
 });
 connectDB();
@@ -46,8 +52,8 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim())
   : [clientUrl];
 
-console.log(`🛡️ Allowed Origins: ${allowedOrigins.join(', ')}`);
-console.log(`🔒 Environment: ${process.env.NODE_ENV || 'development'}`);
+logger.info('Allowed Origins: ' + allowedOrigins.join(', '));
+logger.info('Environment: ' + (process.env.NODE_ENV || 'development'));
 
 // Helmet CSP
 app.use(
@@ -92,12 +98,24 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Disposition']
 }));
 
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+// B10: унифицированный лимит body — 50mb (broadcast-вложения до 25MB + запас)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
+
+// S1: Health-check эндпоинт
+app.get('/api/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ok', db: true, uptime: process.uptime() });
+  } catch {
+    res.status(503).json({ status: 'error', db: false, uptime: process.uptime() });
+  }
+});
 
 // Rate limiting
 const generalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 500 });
@@ -122,7 +140,7 @@ if (process.env.NODE_ENV !== 'production') {
     customCss: '.swagger-ui .topbar { display: none }',
     customSiteTitle: 'B2B Portal API',
   }))
-  console.log('📖 Swagger UI: /api-docs')
+  logger.info('Swagger UI: /api-docs')
 }
 
 app.use(errorHandler);
@@ -144,15 +162,11 @@ const io = new Server(httpServer, {
 setIo(io);
 app.set('io', io);
 
+// B12: используем вынесенный parseCookies вместо дублирования
 io.use(async (socket, next) => {
   try {
     const cookieHeader = socket.handshake.headers.cookie;
-    if (!cookieHeader) return next(new Error('Authentication error: no cookies'));
-    const cookies: Record<string, string> = {};
-    cookieHeader.split(';').forEach(cookie => {
-      const [name, value] = cookie.trim().split('=');
-      if (name && value) cookies[name] = value;
-    });
+    const cookies = parseCookies(cookieHeader);
     const token = cookies['jwt'];
     if (!token) return next(new Error('Authentication error: no token'));
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string; sessionId: string };
@@ -174,58 +188,24 @@ io.use(async (socket, next) => {
     if (err.name === 'TokenExpiredError') {
       try {
         const cookieHeader = socket.handshake.headers.cookie;
-        if (!cookieHeader) return next(new Error('Authentication error'));
-
-        const cookies: Record<string, string> = {};
-        cookieHeader.split(';').forEach(cookie => {
-          const [name, value] = cookie.trim().split('=');
-          if (name && value) cookies[name] = value;
-        });
-
+        const cookies = parseCookies(cookieHeader);
         const rawRefresh = cookies['refreshToken'];
         if (!rawRefresh) return next(new Error('Authentication error: no refresh token'));
 
-        const tokenHash = crypto.createHash('sha256').update(rawRefresh).digest('hex');
-        const stored = await prisma.refreshToken.findUnique({
-          where: { tokenHash },
-          include: { user: { select: { id: true, role: true, isBlocked: true, name: true, companyName: true } } },
-        });
-        if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
+        // B13: используем rotateRefreshToken с детектом reuse вместо ручной ротации
+        const res = (socket as any).request?.res;
+        const result = await rotateRefreshToken(rawRefresh, res);
+
+        if (!result.success) {
           return next(new Error('Authentication error: invalid refresh token'));
         }
-        if (stored.user.isBlocked) return next(new Error('User is blocked'));
 
-        // Ротация refresh токена
-        const newRawRefresh = uuidv4();
-        const newHash = crypto.createHash('sha256').update(newRawRefresh).digest('hex');
-        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const user = result.user;
+        if (!user || user.isBlocked) return next(new Error('User is blocked'));
 
-        await prisma.$transaction([
-          prisma.refreshToken.update({
-            where: { id: stored.id },
-            data: { revokedAt: new Date(), replacedByHash: newHash },
-          }),
-          prisma.refreshToken.create({
-            data: { tokenHash: newHash, userId: stored.user.id, sessionId: stored.sessionId, expiresAt },
-          }),
-        ]);
-
-        // Новый access token
-        const newAccessToken = generateAccessToken(stored.user.id, stored.sessionId || '');
-
-        // Пытаемся установить cookie через ответ (работает при polling-транспорте)
-        try {
-          const res = (socket as any).request?.res;
-          if (res && !res.headersSent) {
-            const cookieStr = `jwt=${newAccessToken}; HttpOnly; Path=/; Max-Age=${15*60}; SameSite=Strict${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
-            const existing = res.getHeader('Set-Cookie') || [];
-            res.setHeader('Set-Cookie', [...(Array.isArray(existing) ? existing : [existing]), cookieStr]);
-          }
-        } catch { /* cookie setting is optional — next page load will refresh via HTTP API */ }
-
-        socket.data.user = stored.user;
-        socket.data.userId = stored.user.id;
-        socket.data.userRole = stored.user.role;
+        socket.data.user = { id: user.id, role: user.role, name: user.name, companyName: user.companyName };
+        socket.data.userId = user.id;
+        socket.data.userRole = user.role;
         return next();
       } catch {
         return next(new Error('Authentication error'));
@@ -242,9 +222,9 @@ io.on('connection', (socket) => {
     return;
   }
 
-  console.log(`🟢 New connection: ${socket.id} (user ${user.id}, ${user.role})`);
+  logger.info('New connection: ' + socket.id + ' (user ' + user.id + ', ' + user.role + ')');
 
-  socket.join(`user_${user.id}`);
+  socket.join('user_' + user.id);
   if (user.role === 'ADMIN' || user.role === 'MANAGER') {
     socket.join('admin_room');
     fetchStatsInternal().then(stats => socket.emit('stats_updated', stats));
@@ -257,14 +237,14 @@ io.on('connection', (socket) => {
 
   socket.on('join_project', ({ projectId }) => {
     if (!projectId) return;
-    const room = `project_${projectId}`;
+    const room = 'project_' + projectId;
     socket.join(room);
-    console.log(`📢 [Socket] ${user.name} (${user.role}) joined room: ${room}`);
+    logger.info('[Socket] ' + user.name + ' (' + user.role + ') joined room: ' + room);
   });
 
   socket.on('user_logging_out', async () => {
-    console.log(`🚪 User ${user.id} logged out intentionally`);
-    socket.leave(`user_${user.id}`);
+    logger.info('User ' + user.id + ' logged out intentionally');
+    socket.leave('user_' + user.id);
     socket.leave('admin_room');
     if (user.role !== 'ADMIN') {
       io.to('admin_room').emit('user:offline', user.id);
@@ -273,12 +253,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    console.log(`🔴 Disconnected: ${socket.id}, user ${user.id}`);
+    logger.info('Disconnected: ' + socket.id + ', user ' + user.id);
     setTimeout(async () => {
       const activeSockets = await io.fetchSockets();
       const stillConnected = activeSockets.some(s => s.data.userId === user.id);
       if (!stillConnected && user.role !== 'ADMIN') {
-        console.log(`📡 User ${user.id} is now fully offline`);
+        logger.info('User ' + user.id + ' is now fully offline');
         io.to('admin_room').emit('user:offline', user.id);
         await emitStatsUpdate();
       }
@@ -286,8 +266,29 @@ io.on('connection', (socket) => {
   });
 });
 
-console.log('📡 Starting HTTP server...');
+// B19: Graceful shutdown
+const gracefulShutdown = async (signal: string) => {
+  logger.info(signal + ' received. Starting graceful shutdown...');
+  try {
+    logger.info('Closing HTTP server...');
+    httpServer.close();
+    logger.info('Closing Socket.IO...');
+    io.close();
+    logger.info('Disconnecting from database...');
+    await disconnectDB();
+    logger.info('Graceful shutdown complete.');
+    process.exit(0);
+  } catch (err: any) {
+    logger.error('Error during graceful shutdown:', { error: err.message });
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+logger.info('Starting HTTP server...');
 httpServer.listen(Number(PORT), HOST, () => {
-  console.log(`🚀 Server running on http://${HOST}:${PORT}`);
-  console.log(`✅ DB: ${process.env.DATABASE_URL ? 'configured' : 'missing'}`);
+  logger.info('Server running on http://' + HOST + ':' + PORT);
+  logger.info('DB: ' + (process.env.DATABASE_URL ? 'configured' : 'missing'));
 });

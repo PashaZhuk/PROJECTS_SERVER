@@ -3,6 +3,18 @@ node_modules
 .env
 
 /generated/prisma
-/logs/ 
+/logs/
 backups/
-scripts/
+# scripts/ — теперь часть репо (утилиты export_for_ai.py, restore.sh)
+# B2Bclient — артефакт
+B2Bclient*
+
+# B29: разовые служебные скрипты (фикс телефонов/админов в БД) — не в репозиторий
+scripts/check_admin.ts
+scripts/check_phone.ts
+scripts/check_raw_phone.ts
+scripts/fix_final.ts
+scripts/fix_phone_admin.ts
+scripts/fix_phones.ts
+scripts/force_phone.ts
+scripts/verify_phone.ts

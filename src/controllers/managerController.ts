@@ -5,8 +5,18 @@ import { sendEmail } from '../services/emailService.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { logBroadcast } from '../services/broadcastLogService.js';
 import { logEvent } from '../services/eventLogService.js';
+import type { AuthRequest } from '../types/express.js';
 
-export const getPartners = asyncHandler(async (req: Request, res: Response) => {
+// B16: санитизация HTML от опасных тегов и атрибутов
+const sanitizeHtml = (html: string): string => {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/on\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/on\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/javascript:/gi, '');
+};
+
+export const getPartners = asyncHandler(async (req: AuthRequest, res: Response) => {
   const partners = await prisma.user.findMany({
     where: { role: 'USER' },
     select: {
@@ -22,7 +32,7 @@ export const getPartners = asyncHandler(async (req: Request, res: Response) => {
   sendSuccess(res, partners);
 });
 
-export const sendBroadcast = asyncHandler(async (req: Request, res: Response) => {
+export const sendBroadcast = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { recipientIds, subject, message, attachments } = req.body;
   // Данные уже провалидированы broadcastSchema в middleware
 
@@ -48,7 +58,7 @@ export const sendBroadcast = asyncHandler(async (req: Request, res: Response) =>
         await sendEmail({
           to: recipient.email!,
           subject,
-          html: message,
+          html: sanitizeHtml(message),
           attachments: attachments
             ? attachments.map((att: any) => ({
                 filename: att.filename,
@@ -71,7 +81,7 @@ export const sendBroadcast = asyncHandler(async (req: Request, res: Response) =>
   });
 
   // Логируем
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   const status = failed.length > 0 && sent === 0 ? 'error' : 'sent';
   logBroadcast({ subject, message, recipients: recipients.length, status, sentBy: userId });
   logEvent({

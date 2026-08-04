@@ -4,6 +4,8 @@ import { prisma } from '../config/db.js';
 import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
+import type { LogMeta } from '../types/express.js';
+import type { Socket } from 'socket.io';
 
 export const getUsersList = async (params: {
   page: number;
@@ -12,17 +14,20 @@ export const getUsersList = async (params: {
   role: string;
 }) => {
   const { page, limit, search, role } = params;
-  const take = Number(limit);
+  // B14: ограничение limit сверху — не более 100
+  const take = Math.min(Math.max(1, Number(limit)), 100);
   const skip = (Number(page) - 1) * take;
+  // B17: экранируем wildcard-символы % и _ для ILIKE-поиска
+  const escapedSearch = (search || '').trim().replace(/[%_]/g, '\\$&');
   const where: any = {
     role: { not: 'ADMIN' },
     ...(role && role !== 'ALL' && { role }),
-    ...(search && {
+    ...(escapedSearch && {
       OR: [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { companyName: { contains: search, mode: 'insensitive' } },
-        { unp: { contains: search, mode: 'insensitive' } },
+        { name: { contains: escapedSearch, mode: 'insensitive' } },
+        { email: { contains: escapedSearch, mode: 'insensitive' } },
+        { companyName: { contains: escapedSearch, mode: 'insensitive' } },
+        { unp: { contains: escapedSearch, mode: 'insensitive' } },
       ],
     }),
   };
@@ -45,7 +50,7 @@ export const getUsersList = async (params: {
   const io = getIo();
   const onlineUserIds = new Set<number>();
   if (io) {
-    io.sockets.sockets.forEach((s: any) => {
+    io.sockets.sockets.forEach((s: Socket) => {
       if (s.data?.userId) onlineUserIds.add(s.data.userId);
     });
   }
@@ -58,7 +63,7 @@ export const getUsersList = async (params: {
   return { users: usersWithOnlineStatus, totalCount, totalPages: Math.ceil(totalCount / take), currentPage: Number(page) };
 };
 
-export const deleteUserById = async (id: number, currentUserId: number, logMeta?: any) => {
+export const deleteUserById = async (id: number, currentUserId: number, logMeta?: LogMeta) => {
   if (id === currentUserId) throw new AppError(400, 'Вы не можете удалить свою собственную учетную запись');
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
@@ -67,7 +72,7 @@ export const deleteUserById = async (id: number, currentUserId: number, logMeta?
   await emitStatsUpdate();
 };
 
-export const toggleBlockUser = async (id: number, currentUserId: number, logMeta?: any) => {
+export const toggleBlockUser = async (id: number, currentUserId: number, logMeta?: LogMeta) => {
   const targetId = Number(id);
   if (targetId === currentUserId) throw new AppError(400, 'Вы не можете заблокировать себя');
   const user = await prisma.user.findUnique({ where: { id: targetId } });
@@ -129,7 +134,7 @@ export const toggleBlockUser = async (id: number, currentUserId: number, logMeta
   return { message, isBlocked: newBlockedState };
 };
 
-export const changeUserPassword = async (userId: number, newPassword: string, logMeta?: any) => {
+export const changeUserPassword = async (userId: number, newPassword: string, logMeta?: LogMeta) => {
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(newPassword, salt);
   await prisma.user.update({ where: { id: userId }, data: { password: hashedPassword, mustChangePassword: false } });

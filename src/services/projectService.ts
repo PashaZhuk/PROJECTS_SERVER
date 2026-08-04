@@ -4,8 +4,9 @@ import { emitStatsUpdate, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import { logEvent } from './eventLogService.js';
+import type { LogMeta } from '../types/express.js';
 
-export const createProject = async (data: any, userId: number, logMeta?: any) => {
+export const createProject = async (data: any, userId: number, logMeta?: LogMeta) => {
   const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = data;
 
   const existingProject = await prisma.project.findFirst({
@@ -39,8 +40,10 @@ export const createProject = async (data: any, userId: number, logMeta?: any) =>
 
 export const getProjects = async (userId: number, userRole: string, query: any) => {
   const page = Math.max(1, parseInt(query.page) || 1);
-  const limit = Math.max(1, parseInt(query.limit) || 10);
-  const search = (query.search || '').trim();
+  // B14: ограничение limit сверху — не более 100
+  const limit = Math.min(Math.max(1, parseInt(query.limit) || 10), 100);
+  // B17: экранируем wildcard-символы % и _ для ILIKE-поиска
+  const search = (query.search || '').trim().replace(/[%_]/g, '\\$&');
   const skip = (page - 1) * limit;
   let where: any = {};
   if (userRole === 'USER') where.partnerId = userId;
@@ -82,10 +85,11 @@ export const getProjects = async (userId: number, userRole: string, query: any) 
   return { projects: processedProjects, totalPages: Math.ceil(totalCount / limit), currentPage: page, totalCount };
 };
 
-export const updateProject = async (id: number, data: any, userId: number, userRole: string, logMeta?: any) => {
+export const updateProject = async (id: number, data: any, userId: number, userRole: string, logMeta?: LogMeta) => {
   const project = await prisma.project.findUnique({ where: { id } });
   if (!project) throw new AppError(404, 'Проект не найден');
-  if (project.partnerId !== userId && userRole !== 'MANAGER') throw new AppError(403, 'Доступ запрещен');
+  // B5: ADMIN также может редактировать проект
+  if (project.partnerId !== userId && userRole !== 'MANAGER' && userRole !== 'ADMIN') throw new AppError(403, 'Доступ запрещен');
   const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = data;
   const updatedProject = await prisma.project.update({
     where: { id },
@@ -106,7 +110,7 @@ export const updateProject = async (id: number, data: any, userId: number, userR
   return updatedProject;
 };
 
-export const updateProjectStatus = async (id: number, status: string, userId: number, userRole: string, logMeta?: any) => {
+export const updateProjectStatus = async (id: number, status: string, userId: number, userRole: string, logMeta?: LogMeta) => {
   if (userRole !== 'MANAGER' && userRole !== 'ADMIN') throw new AppError(403, 'Недостаточно прав');
   const project = await prisma.project.findUnique({ where: { id } });
   if (!project) throw new AppError(404, 'Проект не найден');

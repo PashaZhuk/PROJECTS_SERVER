@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import type { Request, Response, NextFunction } from 'express';
-import { sendError } from './response.js';
 
 // ----------------------
 // USER / AUTH SCHEMAS
@@ -41,12 +39,10 @@ export const resetPasswordSchema = z.object({
   newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
 });
 
-export const twoFASendSchema = z.object({
-  userId: z.number().int().positive(),
-});
+// B4: userId убран из тела запроса — теперь читается из preauth cookie
+export const twoFASendSchema = z.object({});
 
 export const twoFAVerifySchema = z.object({
-  userId: z.number().int().positive(),
   code: z.string().length(6, 'Код должен состоять из 6 цифр'),
 });
 
@@ -93,7 +89,26 @@ export const broadcastSchema = z.object({
 // PROJECT SCHEMAS
 // ----------------------
 
-export const createProjectSchema = z.object({
+// B15: Валидация dynamicData — Record<string, unknown> с лимитом полей и длины строк
+const MAX_DYNAMIC_FIELDS = 50;
+const MAX_DYNAMIC_STRING_LENGTH = 500;
+
+const dynamicDataSchema = z.record(z.string(), z.unknown()).refine(
+  (data) => Object.keys(data).length <= MAX_DYNAMIC_FIELDS,
+  { message: `Слишком много полей в dynamicData (максимум ${MAX_DYNAMIC_FIELDS})` }
+).refine(
+  (data) => {
+    for (const value of Object.values(data)) {
+      if (typeof value === 'string' && value.length > MAX_DYNAMIC_STRING_LENGTH) {
+        return false;
+      }
+    }
+    return true;
+  },
+  { message: `Значения строк в dynamicData не могут быть длиннее ${MAX_DYNAMIC_STRING_LENGTH} символов` }
+);
+
+const baseProjectSchema = z.object({
   formType: z.string().min(1, 'Не выбран тип формы'),
   customerName: z.string().min(1, 'Укажите наименование заказчика'),
   customerInn: z.string().regex(/^\d{9}$/, 'УНП должен содержать ровно 9 цифр'),
@@ -101,7 +116,29 @@ export const createProjectSchema = z.object({
   executionDate: z.string().optional().or(z.date()).or(z.null()),
 }).passthrough();
 
-export const updateProjectSchema = createProjectSchema.partial();
+export const createProjectSchema = baseProjectSchema.superRefine((data, ctx) => {
+  const knownKeys = ['formType', 'customerName', 'customerInn', 'purchaseMethod', 'executionDate'];
+  const dynamicKeys = Object.keys(data).filter(k => !knownKeys.includes(k));
+  if (dynamicKeys.length > MAX_DYNAMIC_FIELDS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['dynamicData'],
+      message: `Слишком много полей в dynamicData (максимум ${MAX_DYNAMIC_FIELDS})`,
+    });
+  }
+  for (const key of dynamicKeys) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > MAX_DYNAMIC_STRING_LENGTH) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `Значение поля "${key}" не может быть длиннее ${MAX_DYNAMIC_STRING_LENGTH} символов`,
+      });
+    }
+  }
+});
+
+export const updateProjectSchema = baseProjectSchema.partial();
 
 export const updateProjectStatusSchema = z.object({
   status: z.enum(['PENDING', 'IN_PROGRESS', 'APPROVED', 'REJECTED', 'REVISION', 'CLOSED']),
@@ -144,25 +181,3 @@ export const sendMessageSchema = z.object({
 export const partnerQuerySchema = z.object({
   unp: z.string().regex(/^\d{9}$/, 'УНП должен содержать ровно 9 цифр'),
 });
-
-// ----------------------
-// MIDDLEWARE ВАЛИДАЦИИ
-// ----------------------
-
-export const validate = (schema: z.ZodObject<any, any> | z.ZodEffects<any>) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      await schema.parseAsync(req.body);
-      next();
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        const errors = error.issues.map(issue => ({
-          path: issue.path.join('.'),
-          message: issue.message,
-        }));
-        return sendError(res, 400, 'Ошибка валидации данных', { errors });
-      }
-      next(error);
-    }
-  };
-};

@@ -1,10 +1,12 @@
 import { prisma } from '../config/db.js';
+import logger from '../utils/logger.js';
+import type { Server, Socket } from 'socket.io';
 
-let globalIo: any = null;
+let globalIo: Server | null = null;
 
-export const setIo = (io: any) => {
+export const setIo = (io: Server) => {
   globalIo = io;
-  console.log('✅ Socket.IO instance saved globally');
+  logger.info('✅ Socket.IO instance saved globally');
 };
 
 export const getIo = () => globalIo;
@@ -17,7 +19,7 @@ export const getOnlineUsersFromSockets = () => {
   const userNames: string[] = [];
   const managerNames: string[] = [];
   const sockets = io.sockets.sockets;
-  sockets.forEach((socket: any) => {
+  sockets.forEach((socket: Socket) => {
     const userId = socket.data?.userId;
     const userRole = socket.data?.userRole;
     const displayName = socket.data?.user?.companyName || socket.data?.user?.name || '';
@@ -64,7 +66,7 @@ export const emitStatsUpdate = async () => {
     const stats = await fetchStatsInternal();
     io.to('admin_room').emit('stats_updated', stats);
   } catch (error) {
-    console.error('Socket Emit Stats Error:', error);
+    logger.error('Socket Emit Stats Error:', error);
   }
 };
 
@@ -80,10 +82,10 @@ export const emitUserLockStatus = (
 ) => {
   const io = getIo();
   if (!io) {
-    console.warn('⚠️ emitUserLockStatus: io not set, skipping');
+    logger.warn('⚠️ emitUserLockStatus: io not set, skipping');
     return;
   }
-  console.log('📢 emitUserLockStatus called', { userId, updates });
+  logger.info('📢 emitUserLockStatus called', { userId, updates });
   io.to('admin_room').emit('user:blocked_status_changed', {
     userId,
     ...updates,

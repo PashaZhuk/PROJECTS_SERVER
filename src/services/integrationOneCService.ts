@@ -192,25 +192,48 @@ export async function getReconciliationStatement(
   const data = await response.arrayBuffer();
   const contentType = response.headers.get('content-type') || 'application/octet-stream';
   const disposition = response.headers.get('content-disposition');
-  let filename = 'akt-sverki';
+  const extMap: Record<string, string> = {
+    'application/pdf': '.pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/msword': '.doc',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  };
 
+  // Определяем расширение из content-disposition или content-type
+  let ext = '.bin';
   if (disposition) {
     const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
-    if (match) {
-      filename = decodeURIComponent(match[1]);
+    if (match && match[1]) {
+      const originalFilename = decodeURIComponent(match[1]).replace(/^"+|"+$/g, '');
+      const dotIndex = originalFilename.lastIndexOf('.');
+      if (dotIndex !== -1) {
+        ext = originalFilename.slice(dotIndex);
+      }
     }
   }
+  if (ext === '.bin') {
+    ext = extMap[contentType] || '.bin';
+  }
 
-  // Если расширения нет — добавляем по content-type
-  if (!filename.includes('.')) {
-    const extMap: Record<string, string> = {
-      'application/pdf': '.pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-      'application/msword': '.doc',
-      'application/vnd.ms-excel': '.xls',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-    };
-    filename += extMap[contentType] || '.bin';
+  let filename: string;
+  if (year !== undefined && quarter !== undefined) {
+    // Квартальный акт — имя с указанием периода
+    filename = `reconciliation-${year}-Q${quarter}${ext}`;
+  } else {
+    // Текущий акт — имя из content-disposition от 1С (с датой)
+    if (disposition) {
+      const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+      if (match && match[1]) {
+        filename = decodeURIComponent(match[1]).replace(/^"+|"+$/g, '');
+        // Заменяем нижние подчёркивания на дефисы (1С присылает reconciliation_2026-07-30.pdf)
+        filename = filename.replace(/_/g, '-');
+      } else {
+        filename = 'akt-sverki' + ext;
+      }
+    } else {
+      filename = 'akt-sverki' + ext;
+    }
   }
 
   return { data, contentType, filename };

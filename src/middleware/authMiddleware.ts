@@ -1,15 +1,13 @@
-import type { Request, Response, NextFunction } from 'express';
+import type { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/db.js';
 import { sendError } from '../utils/response.js';
+import logger from '../utils/logger.js';
+import type { AuthRequest } from '../types/express.js';
 
 interface JwtPayload {
   id: string;
   sessionId?: string;
-}
-
-interface AuthRequest extends Request {
-  user?: any;
 }
 
 export const authMiddleware = async (
@@ -45,6 +43,9 @@ export const authMiddleware = async (
         name: true,
         role: true,
         companyName: true,
+        unp: true,
+        phone: true,
+        mustChangePassword: true,
         isBlocked: true,
         currentSessionId: true,
         lastSeen: true,
@@ -80,7 +81,7 @@ export const authMiddleware = async (
       await prisma.user.update({
         where: { id: userId },
         data: { lastSeen: now }
-      }).catch(err => console.error("lastSeen update failed:", err));
+      }).catch(err => logger.error("lastSeen update failed:", err));
     }
 
     // Добавляем информацию о пользователе в logMeta
@@ -97,7 +98,7 @@ export const authMiddleware = async (
     req.user = user;
     next();
   } catch (err: any) {
-    console.error("[Auth] Token verification failed:", err.message);
+    logger.error("[Auth] Token verification failed:", err.message);
     return sendError(res, 401, "Not authorized, token failed");
   }
 };
