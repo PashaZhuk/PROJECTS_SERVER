@@ -3,10 +3,14 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import type { Response } from 'express';
 import { prisma } from '../config/db.js';
+import logger from '../utils/logger.js';
 
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REFRESH_COOKIE_PATH = '/api/auth';
+const PREAUTH_TOKEN_EXPIRY = '5m';
+const PREAUTH_COOKIE_NAME = 'preauth';
+const PREAUTH_COOKIE_PATH = '/api/auth';
 
 const hashToken = (token: string): string => {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -121,7 +125,7 @@ export const rotateRefreshToken = async (
 
   // Token reuse detection: если токен уже был отозван, это компрометация
   if (storedToken.revokedAt) {
-    console.warn(`[RefreshToken] REUSE DETECTED for user ${storedToken.userId}, revoking ALL tokens`);
+    logger.warn(`[RefreshToken] REUSE DETECTED for user ${storedToken.userId}, revoking ALL tokens`);
     await prisma.refreshToken.updateMany({
       where: { userId: storedToken.userId, revokedAt: null },
       data: { revokedAt: new Date() },
@@ -216,4 +220,49 @@ export const generateToken = async (userId: string | number, res: Response): Pro
   setAccessTokenCookie(accessToken, res);
   await generateAndStoreRefreshToken(Number(userId), sessionId, res);
   return { token: accessToken, sessionId };
+};
+
+/**
+ * B4: Pre-auth токен для 2FA-флоу.
+ * Короткоживущий signed JWT (5 мин), привязанный к userId.
+ * Устанавливается в httpOnly cookie `preauth` при шаге "требуется 2FA".
+ * send2FACode/verify2FACode читают userId из этого токена, а не из тела запроса.
+ */
+export const generatePreAuthToken = (userId: number): string => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET is not defined in environment variables');
+  }
+  return jwt.sign({ id: userId, preauth: true }, secret, {
+    expiresIn: PREAUTH_TOKEN_EXPIRY,
+  });
+};
+
+export const setPreAuthCookie = (token: string, res: Response): void => {
+  res.cookie(PREAUTH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: PREAUTH_COOKIE_PATH,
+    maxAge: 5 * 60 * 1000, // 5 min
+  });
+};
+
+export const clearPreAuthCookie = (res: Response): void => {
+  res.clearCookie(PREAUTH_COOKIE_NAME, { path: PREAUTH_COOKIE_PATH });
+};
+
+export const verifyPreAuthToken = (token: string | undefined): { userId: number } | null => {
+  if (!token) return null;
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+  try {
+    const decoded = jwt.verify(token, secret) as { id: string; preauth?: boolean };
+    if (!decoded.preauth) return null;
+    const userId = Number(decoded.id);
+    if (isNaN(userId)) return null;
+    return { userId };
+  } catch {
+    return null;
+  }
 };

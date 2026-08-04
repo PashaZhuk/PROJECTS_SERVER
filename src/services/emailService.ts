@@ -1,34 +1,27 @@
 import nodemailer from 'nodemailer';
 import { config } from 'dotenv';
+import logger from '../utils/logger.js';
 
 config();
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT),
-  secure: process.env.SMTP_SECURE === 'true',
-  connectionTimeout: 5000, // 5 сек таймаут — не блокируем старт сервера
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+// B26: Ленивая инициализация SMTP — transporter создаётся при первой отправке
+let transporter: nodemailer.Transporter | null = null;
 
-// Проверка SMTP с таймаутом — не блокируем старт
-const verifyWithTimeout = (timeoutMs = 5000) => {
-  const timeout = setTimeout(() => {
-    console.warn('⚠️ SMTP verify timeout — email может не работать');
-  }, timeoutMs);
-  transporter.verify((error, success) => {
-    clearTimeout(timeout);
-    if (error) {
-      console.warn('⚠️ SMTP недоступен:', error.message);
-    } else {
-      console.log('📧 SMTP готов');
-    }
-  });
+const getTransporter = (): nodemailer.Transporter => {
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT),
+      secure: process.env.SMTP_SECURE === 'true',
+      connectionTimeout: 5000,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
+  return transporter;
 };
-verifyWithTimeout();
 
 interface Attachment {
   filename: string;
@@ -45,17 +38,18 @@ interface SendMailOptions {
 
 export const sendEmail = async ({ to, subject, html, attachments }: SendMailOptions) => {
   try {
-    const info = await transporter.sendMail({
+    const t = getTransporter();
+    const info = await t.sendMail({
       from: `"IPMATIKA B2B" <${process.env.SMTP_USER}>`,
       to,
       subject,
       html,
       attachments,
     });
-    console.log(`Email sent to ${to}: %s`, info.messageId);
+    logger.info(`Email sent to ${to}: ${info.messageId}`);
     return true;
-  } catch (error) {
-    console.error(`Error sending email to ${to}:`, error);
+  } catch (error: any) {
+    logger.error(`Error sending email to ${to}:`, { error: error.message });
     throw new Error('Не удалось отправить письмо');
   }
 };

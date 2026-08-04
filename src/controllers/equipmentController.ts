@@ -10,8 +10,9 @@ import {
   getEquipmentCategories,
 } from '../services/equipmentService.js';
 import { logEvent } from '../services/eventLogService.js';
+import type { AuthRequest } from '../types/express.js';
 
-export const listEquipment = asyncHandler(async (req: Request, res: Response) => {
+export const listEquipment = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { category, status, search, page, perPage } = req.query;
   const result = await getEquipmentList({
     category: category as string,
@@ -23,7 +24,7 @@ export const listEquipment = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, result);
 });
 
-export const getEquipment = asyncHandler(async (req: Request, res: Response) => {
+export const getEquipment = asyncHandler(async (req: AuthRequest, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
   if (isNaN(id)) { sendError(res, 400, 'Некорректный ID'); return; }
@@ -32,10 +33,10 @@ export const getEquipment = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, item);
 });
 
-export const addEquipment = asyncHandler(async (req: Request, res: Response) => {
+export const addEquipment = asyncHandler(async (req: AuthRequest, res: Response) => {
   const data = req.body || {};
   const item = await createEquipment(data);
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   const details = [
     item.name ? `Наименование: ${item.name}` : '',
     item.category ? `Категория: ${item.category}` : '',
@@ -53,7 +54,7 @@ export const addEquipment = asyncHandler(async (req: Request, res: Response) => 
   sendSuccess(res, item, 'Оборудование добавлено');
 });
 
-export const editEquipment = asyncHandler(async (req: Request, res: Response) => {
+export const editEquipment = asyncHandler(async (req: AuthRequest, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
   if (isNaN(id)) { sendError(res, 400, 'Некорректный ID'); return; }
@@ -64,7 +65,7 @@ export const editEquipment = asyncHandler(async (req: Request, res: Response) =>
   if (!oldItem) { sendError(res, 404, 'Оборудование не найдено'); return; }
   
   const item = await updateEquipment(id, data);
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
 
   // Сравниваем поля и собираем changes
   const changes: string[] = [];
@@ -96,14 +97,14 @@ export const editEquipment = asyncHandler(async (req: Request, res: Response) =>
   sendSuccess(res, item, 'Оборудование обновлено');
 });
 
-export const removeEquipment = asyncHandler(async (req: Request, res: Response) => {
+export const removeEquipment = asyncHandler(async (req: AuthRequest, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
   if (isNaN(id)) { sendError(res, 400, 'Некорректный ID'); return; }
   const item = await getEquipmentById(id);
   if (!item) { sendError(res, 404, 'Оборудование не найдено'); return; }
   await deleteEquipment(id);
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   logEvent({
     action: 'equipment_deleted',
     description: `Удалено: ${item.name}${item.serialNumber ? ` (SN: ${item.serialNumber})` : ''}${item.macAddress ? `, MAC: ${item.macAddress}` : ''}`,
@@ -112,7 +113,7 @@ export const removeEquipment = asyncHandler(async (req: Request, res: Response) 
   sendSuccess(res, undefined, 'Оборудование удалено');
 });
 
-export const listCategories = asyncHandler(async (_req: Request, res: Response) => {
+export const listCategories = asyncHandler(async (_req: AuthRequest, res: Response) => {
   const categories = await getEquipmentCategories();
   sendSuccess(res, categories);
 });

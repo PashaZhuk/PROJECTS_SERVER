@@ -1,11 +1,13 @@
+import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/response.js';
 import { getSetting, getAllSettings, upsertSetting } from '../services/settingsService.js';
+import type { AuthRequest } from '../types/express.js';
 
 /** Публичный: GET /api/settings/:key */
-export const getPublicSetting = asyncHandler(async (req: any, res: any) => {
+export const getPublicSetting = asyncHandler(async (req: Request, res: Response) => {
   const { key } = req.params;
-  const value = await getSetting(key);
+  const value = await getSetting(key!);
   if (value === null) {
     return sendSuccess(res, null, 'Настройка не найдена');
   }
@@ -13,15 +15,15 @@ export const getPublicSetting = asyncHandler(async (req: any, res: any) => {
 });
 
 /** Админ: GET /api/admin/settings */
-export const getAllAdminSettings = asyncHandler(async (_req: any, res: any) => {
+export const getAllAdminSettings = asyncHandler(async (_req: Request, res: Response) => {
   const settings = await getAllSettings();
   sendSuccess(res, settings);
 });
 
 /** Админ: GET /api/admin/settings/:key */
-export const getAdminSetting = asyncHandler(async (req: any, res: any) => {
+export const getAdminSetting = asyncHandler(async (req: Request, res: Response) => {
   const { key } = req.params;
-  const value = await getSetting(key);
+  const value = await getSetting(key!);
   if (value === null) {
     return sendSuccess(res, null, 'Настройка не найдена');
   }
@@ -29,7 +31,7 @@ export const getAdminSetting = asyncHandler(async (req: any, res: any) => {
 });
 
 /** Админ: PUT /api/admin/settings/:key */
-export const updateSetting = asyncHandler(async (req: any, res: any) => {
+export const updateSetting = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { key } = req.params;
   const { value } = req.body;
   if (value === undefined) {

@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { createProject, getProjects, updateProject, updateProjectStatus } from '../controllers/projectController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { managerMiddleware } from '../middleware/managerMiddleware';
-import { validate, createProjectSchema, updateProjectSchema, updateProjectStatusSchema } from '../utils/validationSchemas';
+import { validate } from '../middleware/validate';
+import { createProjectSchema, updateProjectSchema, updateProjectStatusSchema } from '../utils/validationSchemas';
 
 const router = Router();
 

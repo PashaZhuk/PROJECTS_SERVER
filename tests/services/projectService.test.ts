@@ -112,6 +112,34 @@ describe('getProjects', () => {
   })
 })
 
+// ================================================================
+// B14: ограничение limit в пагинации
+// ================================================================
+
+describe('getProjects — лимит limit (B14)', () => {
+  it('ограничивает limit до 100 даже при запросе 1000000', async () => {
+    // Создаём 3 проекта
+    await createProject({ formType: 't1', customerName: 'A', customerInn: '111' }, userId)
+    await createProject({ formType: 't1', customerName: 'B', customerInn: '222' }, userId)
+    await createProject({ formType: 't1', customerName: 'C', customerInn: '333' }, userId)
+
+    const result = await getProjects(managerId, 'MANAGER', { page: '1', limit: '1000000' })
+    // limit ограничен до 100, но проектов всего 3 — должны получить все 3
+    expect(result.projects.length).toBe(3)
+    expect(result.totalCount).toBe(3)
+  })
+
+  it('корректно обрабатывает limit=1', async () => {
+    await createProject({ formType: 't1', customerName: 'A', customerInn: '111' }, userId)
+    await createProject({ formType: 't1', customerName: 'B', customerInn: '222' }, userId)
+
+    const result = await getProjects(managerId, 'MANAGER', { page: '1', limit: '1' })
+    expect(result.projects.length).toBe(1)
+    expect(result.totalCount).toBe(2)
+    expect(result.totalPages).toBe(2)
+  })
+})
+
 describe('updateProject', () => {
   it('USER может обновить свой проект', async () => {
     const p = await createProject(
@@ -134,6 +162,29 @@ describe('updateProject', () => {
     await expect(
       updateProject(p.id, { customerName: 'Хакер' }, userId, 'USER')
     ).rejects.toThrow(AppError)
+  })
+
+  // B5: ADMIN может редактировать проект
+  it('ADMIN может обновить чужой проект (B5)', async () => {
+    const p = await createProject(
+      { formType: 't1', customerName: 'Чужой проект', customerInn: '555666777' },
+      userId,
+    )
+    // Создаём ADMIN через прямой prisma-запрос (registerUser не создаёт ADMIN)
+    const { prisma } = await import('../../src/config/db.js')
+    const admin = await prisma.user.create({
+      data: {
+        email: 'admin-update@test.com',
+        password: 'hashed',
+        role: 'ADMIN',
+        name: 'Админ',
+        phone: '+375295555555',
+        mustChangePassword: false,
+      },
+    })
+
+    const updated = await updateProject(p.id, { customerName: 'Обновлено админом' }, admin.id, 'ADMIN')
+    expect(updated.customerName).toBe('Обновлено админом')
   })
 })
 

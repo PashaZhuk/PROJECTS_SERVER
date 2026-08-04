@@ -78,22 +78,22 @@ describe('registerSchema', () => {
 })
 
 describe('twoFASendSchema', () => {
-  it('валидирует userId как число', () => {
-    expect(safeParse(twoFASendSchema, { userId: 1 }).success).toBe(true)
+  it('валидирует пустой объект (userId убран из тела — B4)', () => {
+    expect(safeParse(twoFASendSchema, {}).success).toBe(true)
   })
 
-  it('отклоняет userId не число', () => {
-    expect(safeParse(twoFASendSchema, { userId: 'abc' }).success).toBe(false)
+  it('игнорирует лишние поля (userId больше не принимается из тела — B4)', () => {
+    expect(safeParse(twoFASendSchema, { userId: 'abc' }).success).toBe(true)
   })
 })
 
 describe('twoFAVerifySchema', () => {
-  it('валидирует userId + code', () => {
-    expect(safeParse(twoFAVerifySchema, { userId: 1, code: '123456' }).success).toBe(true)
+  it('валидирует code (userId убран из тела — B4)', () => {
+    expect(safeParse(twoFAVerifySchema, { code: '123456' }).success).toBe(true)
   })
 
   it('отклоняет короткий код', () => {
-    expect(safeParse(twoFAVerifySchema, { userId: 1, code: '123' }).success).toBe(false)
+    expect(safeParse(twoFAVerifySchema, { code: '123' }).success).toBe(false)
   })
 })
 

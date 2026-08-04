@@ -4,6 +4,7 @@ import { sendSuccess, sendError } from '../utils/response.js';
 import { getNewsList, createNews, deleteNews, updateNews } from '../services/newsService.js';
 import { logEvent } from '../services/eventLogService.js';
 import { NewsCategory } from '../../generated/prisma/enums.js';
+import type { AuthRequest } from '../types/express.js';
 
 const VALID_CATEGORIES = ['NEWS', 'NOMENCLATURE', 'DEMO'] as const;
 
@@ -15,14 +16,14 @@ function parseCategory(val: unknown): NewsCategory | undefined {
 }
 
 /** GET /api/news?category=NEWS|NOMENCLATURE|DEMO — публичный (нужен auth) */
-export const listNews = asyncHandler(async (req: Request, res: Response) => {
+export const listNews = asyncHandler(async (req: AuthRequest, res: Response) => {
   const category = parseCategory(req.query.category);
   const news = await getNewsList(category);
   sendSuccess(res, news);
 });
 
 /** POST /api/manager/news — создать (manager/admin) */
-export const addNews = asyncHandler(async (req: Request, res: Response) => {
+export const addNews = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { title, content, link, category } = req.body || {};
   if (!title || !content) {
     sendError(res, 400, 'Необходимо указать title и content');
@@ -34,7 +35,7 @@ export const addNews = asyncHandler(async (req: Request, res: Response) => {
     link: link || undefined,
     category: parseCategory(category),
   });
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   logEvent({
     action: 'news_added',
     description: `Добавлена новость: ${title}`,
@@ -46,7 +47,7 @@ export const addNews = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /** DELETE /api/manager/news/:id — удалить (manager/admin) */
-export const removeNews = asyncHandler(async (req: Request, res: Response) => {
+export const removeNews = asyncHandler(async (req: AuthRequest, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
   if (isNaN(id)) {
@@ -54,7 +55,7 @@ export const removeNews = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
   await deleteNews(id);
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   logEvent({
     action: 'news_deleted',
     description: `Удалена новость #${id}`,
@@ -66,7 +67,7 @@ export const removeNews = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /** PUT /api/manager/news/:id — редактировать (manager/admin) */
-export const editNews = asyncHandler(async (req: Request, res: Response) => {
+export const editNews = asyncHandler(async (req: AuthRequest, res: Response) => {
   const idStr = req.params.id || '';
   const id = parseInt(idStr, 10);
   if (isNaN(id)) {
@@ -82,7 +83,7 @@ export const editNews = asyncHandler(async (req: Request, res: Response) => {
     sendError(res, 400, 'content не может быть пустым');
     return;
   }
-  const userId = (req as any).user?.id;
+  const userId = req.user!.id;
   const item = await updateNews(id, {
     title,
     content,

@@ -113,7 +113,8 @@ describe('loginUser', () => {
     } else {
       expect(result.success).toBe(false)
       expect(result.requires2FA).toBe(true)
-      expect(result.userId).toBeGreaterThan(0)
+      // B4: userId больше не возвращается в ответе — он в preauth cookie
+      expect(result.email).toBe(USER_DATA.email)
     }
   })
 

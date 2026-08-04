@@ -2,7 +2,8 @@ import express from 'express';
 import { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock } from '../controllers/userController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
-import { validate, changePasswordSchema } from '../utils/validationSchemas';
+import { validate } from '../middleware/validate';
+import { changePasswordSchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 

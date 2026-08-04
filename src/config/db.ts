@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaPg } from '@prisma/adapter-pg'
 import  {PrismaClient}  from '../../generated/prisma/client'
+import logger from '../utils/logger.js';
 
 const connectionString = `${process.env.DATABASE_URL}`
 
@@ -14,11 +15,11 @@ const connectDB = async () => {
         // выполнение упадет именно здесь и уйдет в catch.
         await prisma.$queryRaw`SELECT 1`; 
         
-        console.log("✅ DB connected and verified via Prisma");
+        logger.info("✅ DB connected and verified via Prisma");
     } catch (error) {
-        console.error("❌ DATABASE CONNECTION ERROR:");
-        console.error("Виртуальная машина с PostgreSQL выключена или недоступна.");
-        // console.error(error.message); // Можно раскомментировать для отладки
+        logger.error("❌ DATABASE CONNECTION ERROR:");
+        logger.error("Виртуальная машина с PostgreSQL выключена или недоступна.");
+        // logger.error(error.message); // Можно раскомментировать для отладки
         process.exit(1); // Завершаем процесс, так как без БД B2B-платформа не имеет смысла
     }
 }

@@ -8,15 +8,21 @@ import {
 } from '../controllers/authController';
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
-import { validate, loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, twoFASendSchema, twoFAVerifySchema } from '../utils/validationSchemas';
+import { validate } from '../middleware/validate';
+import { loginSchema, registerSchema, forgotPasswordSchema, resetPasswordSchema, twoFASendSchema, twoFAVerifySchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 
+// B7: Rate limit на login — 10 запросов/мин с IP (защита от брутфорса)
+const loginLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { success: false, error: 'Слишком много попыток входа. Попробуйте через минуту.' } });
+// B7: Rate limit на forgot-password — 3 запроса/час с IP (защита от спама письмами)
+const forgotPasswordLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 3, message: { success: false, error: 'Слишком много запросов на сброс пароля. Попробуйте позже.' } });
+
 router.post('/register', authMiddleware, adminMiddleware, validate(registerSchema), register);
-router.post('/login', validate(loginSchema), login);
+router.post('/login', loginLimiter, validate(loginSchema), login);
 router.post('/logout', logout);
 router.get('/profile', authMiddleware, getProfile);
-router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
+router.post('/forgot-password', forgotPasswordLimiter, validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 router.post('/change-password', authMiddleware, changePassword);
 // Rate limit для refresh: 10 запросов в минуту (на случай бага в клиенте)

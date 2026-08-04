@@ -2,8 +2,9 @@ import { prisma } from '../config/db.js';
 import { getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
+import type { LogMeta } from '../types/express.js';
 
-export const getProjectMessages = async (projectId: number, userId: number, userRole: string, logMeta?: any) => {
+export const getProjectMessages = async (projectId: number, userId: number, userRole: string, logMeta?: LogMeta) => {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { partnerId: true }
@@ -18,8 +19,17 @@ export const getProjectMessages = async (projectId: number, userId: number, user
   return messages;
 };
 
-export const sendMessage = async (projectId: number, text: string, senderId: number, logMeta?: any) => {
+export const sendMessage = async (projectId: number, text: string, senderId: number, userRole: string, logMeta?: LogMeta) => {
   const parsedProjectId = Number(projectId);
+  // B2: проверка принадлежности проекта (IDOR-защита)
+  const project = await prisma.project.findUnique({
+    where: { id: parsedProjectId },
+    select: { partnerId: true },
+  });
+  if (!project) throw new AppError(404, 'Проект не найден');
+  if (userRole !== 'MANAGER' && userRole !== 'ADMIN' && project.partnerId !== senderId) {
+    throw new AppError(403, 'У вас нет доступа к переписке');
+  }
   const [message] = await prisma.$transaction([
     prisma.message.create({
       data: { text: text.trim(), projectId: parsedProjectId, senderId },
@@ -33,7 +43,16 @@ export const sendMessage = async (projectId: number, text: string, senderId: num
   return message;
 };
 
-export const markMessagesAsRead = async (projectId: number, userId: number, logMeta?: any) => {
+export const markMessagesAsRead = async (projectId: number, userId: number, userRole: string, logMeta?: LogMeta) => {
+  // B3: проверка принадлежности проекта (IDOR-защита)
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { partnerId: true },
+  });
+  if (!project) throw new AppError(404, 'Проект не найден');
+  if (userRole !== 'MANAGER' && userRole !== 'ADMIN' && project.partnerId !== userId) {
+    throw new AppError(403, 'У вас нет доступа к переписке');
+  }
   const senders = await prisma.message.findMany({
     where: { projectId, isRead: false, senderId: { not: userId } },
     select: { senderId: true },

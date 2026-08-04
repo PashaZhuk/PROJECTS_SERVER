@@ -1,8 +1,9 @@
 import type { Response, NextFunction } from 'express';
 import { sendError } from '../utils/response.js';
+import type { AuthRequest } from '../types/express.js';
 
-// Используем тот же интерфейс AuthRequest, что и в authMiddleware
-export const adminMiddleware = (req: any, res: Response, next: NextFunction) => {
+// Используем общий интерфейс AuthRequest
+export const adminMiddleware = (req: AuthRequest, res: Response, next: NextFunction) => {
   // req.user заполняется предыдущим мидлваром (authMiddleware)
   if (req.user && req.user.role === 'ADMIN') {
     next(); // Если админ, идем дальше к контроллеру

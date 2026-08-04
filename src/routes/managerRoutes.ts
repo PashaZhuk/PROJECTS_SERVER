@@ -3,7 +3,8 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 import { managerMiddleware } from '../middleware/managerMiddleware.js';
-import { validate, broadcastSchema, createEquipmentSchema, updateEquipmentSchema } from '../utils/validationSchemas.js';
+import { validate } from '../middleware/validate';
+import { broadcastSchema, createEquipmentSchema, updateEquipmentSchema } from '../utils/validationSchemas';
 import { getPartners, sendBroadcast } from '../controllers/managerController.js';
 import {
   listEquipment,
