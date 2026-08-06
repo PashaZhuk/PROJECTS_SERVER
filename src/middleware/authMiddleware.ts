@@ -67,12 +67,12 @@ export const authMiddleware = async (
     const now = new Date();
     const lastSeen = new Date(user.lastSeen);
     const diffMinutes = (now.getTime() - lastSeen.getTime()) / (1000 * 60);
-    
-    const LIMIT_USER = 120;  // 2 часа для всех
-    const LIMIT_OTHERS = 120;
-    const limit = user.role === 'USER' ? LIMIT_USER : LIMIT_OTHERS;
 
-    if (diffMinutes > limit) {
+    // A3: единая константа неактивности — 2 часа для всех ролей.
+    // Если понадобятся различия по ролям — добавить отдельные константы здесь.
+    const INACTIVITY_LIMIT_MINUTES = 120;
+
+    if (diffMinutes > INACTIVITY_LIMIT_MINUTES) {
       return sendError(res, 401, "Сессия истекла из-за неактивности", { code: "SESSION_EXPIRED" });
     }
 
