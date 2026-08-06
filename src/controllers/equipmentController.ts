@@ -1,4 +1,4 @@
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import {
@@ -80,10 +80,10 @@ export const editEquipment = asyncHandler(async (req: AuthRequest, res: Response
   };
 
   for (const [field, label] of Object.entries(fields)) {
-    const oldVal = (oldItem as any)[field];
-    const newVal = (item as any)[field];
-    const oldStr = field === 'status' ? (statusLabels[oldVal] || oldVal) : String(oldVal ?? '—');
-    const newStr = field === 'status' ? (statusLabels[newVal] || newVal) : String(newVal ?? '—');
+    const oldVal = (oldItem as Record<string, unknown>)[field] as string | undefined;
+    const newVal = (item as Record<string, unknown>)[field] as string | undefined;
+  const oldStr = field === 'status' ? (oldVal === undefined ? '—' : (statusLabels[oldVal] ?? oldVal)) : String(oldVal ?? '—');
+  const newStr = field === 'status' ? (newVal === undefined ? '—' : (statusLabels[newVal] ?? newVal)) : String(newVal ?? '—');
     if (String(oldVal ?? '') !== String(newVal ?? '')) {
       changes.push(`${label}: ${oldStr} → ${newStr}`);
     }

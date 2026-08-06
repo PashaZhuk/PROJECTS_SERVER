@@ -1,4 +1,4 @@
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import { getNewsList, createNews, deleteNews, updateNews } from '../services/newsService.js';
@@ -9,7 +9,7 @@ import type { AuthRequest } from '../types/express.js';
 const VALID_CATEGORIES = ['NEWS', 'NOMENCLATURE', 'DEMO'] as const;
 
 function parseCategory(val: unknown): NewsCategory | undefined {
-  if (typeof val === 'string' && VALID_CATEGORIES.includes(val as any)) {
+  if (typeof val === 'string' && VALID_CATEGORIES.includes(val as (typeof VALID_CATEGORIES)[number])) {
     return val as NewsCategory;
   }
   return undefined;

@@ -13,7 +13,7 @@ router.use(authMiddleware);
 
 router.get('/', asyncHandler(async (req, res) => {
   const cat = req.query.category;
-  const category = typeof cat === 'string' && VALID_CATEGORIES.includes(cat as any)
+  const category = typeof cat === 'string' && VALID_CATEGORIES.includes(cat as (typeof VALID_CATEGORIES)[number])
     ? cat as NewsCategory
     : undefined;
   const news = await getNewsList(category);

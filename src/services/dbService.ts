@@ -133,7 +133,7 @@ export async function getTableData(
 
   // Строим WHERE для поиска
   let whereClause = '';
-  let queryParams: string[] = [];
+  const queryParams: string[] = [];
   const searchableCols = info.columns.filter(c => isSearchableType(c.type) && !['password'].includes(c.name));
   if (search && searchableCols.length > 0) {
     const searchPattern = `%${search}%`;
@@ -200,45 +200,45 @@ export async function updateTableRow(
       ...values,
       rowId
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Перехватываем ошибки PostgreSQL и превращаем в понятные сообщения
-    const msg = String(err?.message || '');
+    const msg = err instanceof Error ? err.message : String(err);
 
     // Ошибка enum — неверное значение для перечисления
     if (msg.includes('invalid input value for enum')) {
       // Парсим: "invalid input value for enum projectstatus: \"aproved\""
       const match = msg.match(/for enum\s+(\S+):\s*"([^"]+)"/i);
       if (match) {
-        const enumName = match[1];
         const badValue = match[2];
         throw new Error(
           `Недопустимое значение "${badValue}" для поля статуса. ` +
-          `Допустимые: PENDING, IN_PROGRESS, APPROVED, REJECTED, REVISION, CLOSED`
+          `Допустимые: PENDING, IN_PROGRESS, APPROVED, REJECTED, REVISION, CLOSED`,
+          { cause: err }
         );
       }
-      throw new Error('Недопустимое значение для поля-перечисления');
+      throw new Error('Недопустимое значение для поля-перечисления', { cause: err });
     }
 
     // Ошибка unique constraint
     if (msg.includes('duplicate key value violates unique constraint')) {
-      throw new Error('Запись с таким значением уже существует (нарушение уникальности)');
+      throw new Error('Запись с таким значением уже существует (нарушение уникальности)', { cause: err });
     }
 
     // Ошибка foreign key
     if (msg.includes('violates foreign key constraint')) {
-      throw new Error('Недопустимая ссылка на связанную запись (нарушение внешнего ключа)');
+      throw new Error('Недопустимая ссылка на связанную запись (нарушение внешнего ключа)', { cause: err });
     }
 
     // Ошибка NOT NULL
     if (msg.includes('null value in column') && msg.includes('violates not-null constraint')) {
       const colMatch = msg.match(/column "([^"]+)"/);
       const colName = colMatch ? colMatch[1] : '';
-      throw new Error(`Поле "${colName}" не может быть пустым`);
+      throw new Error(`Поле "${colName}" не может быть пустым`, { cause: err });
     }
 
     // Любая другая PG ошибка
     if (msg.includes('"') && (msg.includes('relation') || msg.includes('column') || msg.includes('type'))) {
-      throw new Error('Ошибка базы данных: проверьте правильность введённых данных');
+      throw new Error('Ошибка базы данных: проверьте правильность введённых данных', { cause: err });
     }
 
     // Пробрасываем как есть (не PG ошибка)

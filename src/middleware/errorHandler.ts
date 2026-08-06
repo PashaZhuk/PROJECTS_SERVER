@@ -4,15 +4,17 @@ import { AppError } from '../utils/AppError';
 import logger from '../utils/logger';
 import { sendError } from '../utils/response';
 
+// B16: next переименован в _next — Express требует 4 параметра для error-handler,
+// но параметр не используется. Префикс _ указывает на намеренное неиспользование.
 export const errorHandler = (
   err: Error | AppError | ZodError,
   req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ) => {
   let statusCode = 500;
   let message = 'Внутренняя ошибка сервера';
-  let details: any = null;
+  let details: Array<{ path: string; message: string }> | null = null;
 
   // Формируем метаданные для лога
   const logMeta = {
@@ -20,7 +22,7 @@ export const errorHandler = (
     url: req.url,
     ip: req.ip || req.socket.remoteAddress,
     userAgent: req.headers['user-agent'],
-    userId: (req as any).user?.id,
+    userId: (req as Request & { user?: { id?: number } }).user?.id,
     ...(req.logMeta || {}),
   };
 

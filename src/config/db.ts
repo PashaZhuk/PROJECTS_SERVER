@@ -16,7 +16,7 @@ const connectDB = async () => {
         await prisma.$queryRaw`SELECT 1`; 
         
         logger.info("✅ DB connected and verified via Prisma");
-    } catch (error) {
+    } catch {
         logger.error("❌ DATABASE CONNECTION ERROR:");
         logger.error("Виртуальная машина с PostgreSQL выключена или недоступна.");
         // logger.error(error.message); // Можно раскомментировать для отладки

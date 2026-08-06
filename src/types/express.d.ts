@@ -29,6 +29,7 @@ export interface LogMeta {
   role?: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface AuthRequest<Body = any, Params = any> extends Request<Params, any, Body> {
   user?: AuthUser;
   logMeta?: LogMeta;

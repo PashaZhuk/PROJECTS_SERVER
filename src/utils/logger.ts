@@ -75,11 +75,9 @@ const logger = winston.createLogger({
 });
 
 // Расширяем тип Request для logMeta (можно вынести в отдельный файл types, но пока оставим здесь)
-declare global {
-  namespace Express {
-    interface Request {
-      logMeta?: Record<string, any>;
-    }
+declare module 'express-serve-static-core' {
+  interface Request {
+    logMeta?: Record<string, unknown>;
   }
 }
 

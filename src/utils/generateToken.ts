@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import type { Response } from 'express';
 import { prisma } from '../config/db.js';
 import logger from '../utils/logger.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -99,13 +100,16 @@ export const generateTokens = async (
  * Ротация refresh токена (с детектом reuse)
  * Вызывается из POST /api/auth/refresh
  */
+// B4: тип пользователя без пароля
+type UserWithoutPassword = Omit<Prisma.UserModel, 'password'>;
+
 export const rotateRefreshToken = async (
   rawToken: string | undefined,
   res: Response
 ): Promise<{
   success: boolean;
   accessToken?: string;
-  user?: any;
+  user?: UserWithoutPassword;
   error?: string;
 }> => {
   if (!rawToken) {
@@ -178,7 +182,7 @@ export const rotateRefreshToken = async (
     maxAge: REFRESH_TOKEN_EXPIRY_MS,
   });
 
-  const { password, ...userData } = storedToken.user;
+  const { password: _password, ...userData } = storedToken.user;
   return {
     success: true,
     accessToken: newAccessToken,
@@ -208,18 +212,6 @@ export const revokeUserRefreshTokens = async (userId: number, sessionId?: string
  */
 export const clearRefreshCookie = (res: Response): void => {
   res.clearCookie('refreshToken', { path: REFRESH_COOKIE_PATH });
-};
-
-/**
- * @deprecated Используйте generateTokens() вместо generateToken()
- * Оставлен для обратной совместимости, но использует 15m access + refresh
- */
-export const generateToken = async (userId: string | number, res: Response): Promise<{ token: string; sessionId: string }> => {
-  const sessionId = uuidv4();
-  const accessToken = generateAccessToken(userId, sessionId);
-  setAccessTokenCookie(accessToken, res);
-  await generateAndStoreRefreshToken(Number(userId), sessionId, res);
-  return { token: accessToken, sessionId };
 };
 
 /**

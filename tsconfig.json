@@ -18,7 +18,8 @@
     "skipLibCheck": true,
     "outDir": "dist",
     "rootDir": ".",
-    "allowSyntheticDefaultImports": true
-    
+    "allowSyntheticDefaultImports": true,
+    // B21: явно указываем типы Node.js
+    "types": ["node"]
   }
 }

@@ -31,8 +31,8 @@ export const readTable = asyncHandler(async (req: Request, res: Response) => {
   try {
     const result = await getTableData(tableName, { page, perPage, search });
     sendSuccess(res, result);
-  } catch (err: any) {
-    sendError(res, 400, err.message || 'Ошибка загрузки таблицы');
+  } catch (err: unknown) {
+    sendError(res, 400, err instanceof Error ? err.message : 'Ошибка загрузки таблицы');
   }
 });
 
@@ -50,7 +50,7 @@ export const updateRow = asyncHandler(async (req: Request, res: Response) => {
   try {
     await updateTableRow(tableName, rowId, req.body);
     sendSuccess(res, undefined, 'Строка обновлена');
-  } catch (err: any) {
-    sendError(res, 400, err.message || 'Ошибка обновления');
+  } catch (err: unknown) {
+    sendError(res, 400, err instanceof Error ? err.message : 'Ошибка обновления');
   }
 });

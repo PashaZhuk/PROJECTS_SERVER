@@ -76,8 +76,10 @@ export const authMiddleware = async (
       return sendError(res, 401, "Сессия истекла из-за неактивности", { code: "SESSION_EXPIRED" });
     }
 
+    // B7: обновляем lastSeen реже — раз в 5 минут вместо 60 секунд,
+    // чтобы снизить нагрузку на БД при активном использовании.
     const secondsSinceLastSeen = (now.getTime() - lastSeen.getTime()) / 1000;
-    if (secondsSinceLastSeen > 60) {
+    if (secondsSinceLastSeen > 300) {
       await prisma.user.update({
         where: { id: userId },
         data: { lastSeen: now }
@@ -97,8 +99,8 @@ export const authMiddleware = async (
 
     req.user = user;
     next();
-  } catch (err: any) {
-    logger.error("[Auth] Token verification failed:", err.message);
+  } catch (err: unknown) {
+    logger.error("[Auth] Token verification failed:", err instanceof Error ? err.message : String(err));
     return sendError(res, 401, "Not authorized, token failed");
   }
 };

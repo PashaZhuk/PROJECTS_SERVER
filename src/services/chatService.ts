@@ -4,7 +4,7 @@ import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import type { LogMeta } from '../types/express.js';
 
-export const getProjectMessages = async (projectId: number, userId: number, userRole: string, logMeta?: LogMeta) => {
+export const getProjectMessages = async (projectId: number, userId: number, userRole: string, _logMeta?: LogMeta) => {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { partnerId: true }

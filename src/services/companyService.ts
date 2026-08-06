@@ -1,11 +1,12 @@
 import { prisma } from '../config/db.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 export const getCompanies = async (search?: string, limit = 100) => {
-  const where = search
+  const where: Prisma.CompanyWhereInput = search
     ? {
         OR: [
-          { name: { contains: search, mode: 'insensitive' as any } },
-          { unp: { contains: search, mode: 'insensitive' as any } },
+          { name: { contains: search, mode: 'insensitive' } },
+          { unp: { contains: search, mode: 'insensitive' } },
         ],
       }
     : {};

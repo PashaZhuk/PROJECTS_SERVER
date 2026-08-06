@@ -1,12 +1,37 @@
 import { prisma } from '../config/db.js';
 import { ProjectStatus } from '../../generated/prisma/enums.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { emitStatsUpdate, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import { logEvent } from './eventLogService.js';
 import type { LogMeta } from '../types/express.js';
 
-export const createProject = async (data: any, userId: number, logMeta?: LogMeta) => {
+// B4: типы вместо any
+interface CreateProjectData {
+  formType: string;
+  customerName: string;
+  customerInn: string;
+  purchaseMethod?: string;
+  executionDate?: string | null;
+  [key: string]: unknown;
+}
+
+interface GetProjectsQuery {
+  page?: string | number;
+  limit?: string | number;
+  search?: string;
+}
+
+// Тип проекта с include partner и _count
+type ProjectWithPartner = Prisma.ProjectGetPayload<{
+  include: {
+    partner: { select: { id: true; name: true; companyName: true } };
+    _count: { select: { messages: { where: { isRead: false; senderId: { not: number } } } } };
+  };
+}>;
+
+export const createProject = async (data: CreateProjectData, userId: number, logMeta?: LogMeta) => {
   const { formType, customerName, customerInn, purchaseMethod, executionDate, ...otherData } = data;
 
   const existingProject = await prisma.project.findFirst({
@@ -24,7 +49,8 @@ export const createProject = async (data: any, userId: number, logMeta?: LogMeta
       purchaseMethod,
       executionDate: executionDate ? new Date(executionDate) : null,
       partnerId: Number(userId),
-      dynamicData: otherData
+      // B4: каст для Prisma Json-типа
+      dynamicData: otherData as Prisma.InputJsonValue
     },
     include: { partner: { select: { id: true, name: true, companyName: true } } }
   });
@@ -38,14 +64,15 @@ export const createProject = async (data: any, userId: number, logMeta?: LogMeta
   return newProject;
 };
 
-export const getProjects = async (userId: number, userRole: string, query: any) => {
-  const page = Math.max(1, parseInt(query.page) || 1);
+export const getProjects = async (userId: number, userRole: string, query: GetProjectsQuery) => {
+  const page = Math.max(1, parseInt(String(query.page)) || 1);
   // B14: ограничение limit сверху — не более 100
-  const limit = Math.min(Math.max(1, parseInt(query.limit) || 10), 100);
+  const limit = Math.min(Math.max(1, parseInt(String(query.limit)) || 10), 100);
   // B17: экранируем wildcard-символы % и _ для ILIKE-поиска
   const search = (query.search || '').trim().replace(/[%_]/g, '\\$&');
   const skip = (page - 1) * limit;
-  let where: any = {};
+  // B4: типизированный where вместо any
+  let where: Prisma.ProjectWhereInput = {};
   if (userRole === 'USER') where.partnerId = userId;
   if (search) {
     const cleanSearch = search.replace(/^PRJ-/i, '');
@@ -54,11 +81,11 @@ export const getProjects = async (userId: number, userRole: string, query: any) 
     where = {
       ...where,
       OR: [
-        { customerName: { contains: search, mode: 'insensitive' } },
+        { customerName: { contains: search, mode: 'insensitive' as const } },
         ...(isSearchNumeric && !isNaN(searchId) ? [{ id: searchId }] : []),
         ...(userRole === 'MANAGER' || userRole === 'ADMIN' ? [
-          { partner: { companyName: { contains: search, mode: 'insensitive' } } },
-          { partner: { name: { contains: search, mode: 'insensitive' } } }
+          { partner: { companyName: { contains: search, mode: 'insensitive' as const } } },
+          { partner: { name: { contains: search, mode: 'insensitive' as const } } }
         ] : [])
       ]
     };
@@ -76,7 +103,8 @@ export const getProjects = async (userId: number, userRole: string, query: any) 
     prisma.project.count({ where })
   ]);
 
-  const processedProjects = projects.map((p: any) => ({
+  // B4: типизированный map вместо (p: any)
+  const processedProjects = projects.map((p: ProjectWithPartner) => ({
     ...p,
     unreadCount: p._count.messages,
     hasUnread: p._count.messages > 0,
@@ -85,7 +113,8 @@ export const getProjects = async (userId: number, userRole: string, query: any) 
   return { projects: processedProjects, totalPages: Math.ceil(totalCount / limit), currentPage: page, totalCount };
 };
 
-export const updateProject = async (id: number, data: any, userId: number, userRole: string, logMeta?: LogMeta) => {
+// B4: Partial<CreateProjectData> для update — не все поля обязательны при обновлении
+export const updateProject = async (id: number, data: Partial<CreateProjectData>, userId: number, userRole: string, logMeta?: LogMeta) => {
   const project = await prisma.project.findUnique({ where: { id } });
   if (!project) throw new AppError(404, 'Проект не найден');
   // B5: ADMIN также может редактировать проект
@@ -96,7 +125,8 @@ export const updateProject = async (id: number, data: any, userId: number, userR
     data: {
       formType, customerName, customerInn, purchaseMethod,
       executionDate: executionDate ? new Date(executionDate) : null,
-      dynamicData: otherData,
+      // B4: каст для Prisma Json-типа
+      dynamicData: otherData as Prisma.InputJsonValue,
       updatedAt: new Date()
     },
     include: { partner: { select: { id: true, name: true, companyName: true } } }

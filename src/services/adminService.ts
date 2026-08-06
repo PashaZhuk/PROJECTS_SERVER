@@ -5,6 +5,8 @@ import logger from '../utils/logger.js';
 const LOG_DIR = path.join(process.cwd(), 'logs');
 const MAX_LINES = 2000;
 
+type LogEntry = { timestamp: string; level: string; [key: string]: unknown };
+
 async function getLogFiles(date?: string): Promise<string[]> {
   try {
     await fs.access(LOG_DIR);
@@ -23,7 +25,7 @@ export const fetchLogs = async (level?: string, search?: string, limit?: number,
   const filesToRead = await getLogFiles(date);
   if (filesToRead.length === 0) return { logs: [], total: 0, returned: 0 };
 
-  const allEntries: any[] = [];
+  const allEntries: LogEntry[] = [];
   for (const filePath of filesToRead) {
     try {
       const stats = await fs.stat(filePath);
@@ -39,7 +41,9 @@ export const fetchLogs = async (level?: string, search?: string, limit?: number,
         try {
           const entry = JSON.parse(line);
           if (entry && entry.timestamp && entry.level) allEntries.push(entry);
-        } catch {}
+        } catch {
+          // невалидная строка лога — пропускаем
+        }
       }
     } catch (err) {
       logger.error(`Failed to read log file ${filePath}`, { error: err });
@@ -56,7 +60,7 @@ export const fetchLogs = async (level?: string, search?: string, limit?: number,
 /**
  * Собирает все логи за диапазон дат (включительно).
  */
-export const fetchLogsRange = async (dateFrom: string, dateTo: string, level?: string): Promise<any[]> => {
+export const fetchLogsRange = async (dateFrom: string, dateTo: string, level?: string): Promise<LogEntry[]> => {
   const filesToRead: string[] = [];
   const start = new Date(dateFrom);
   const end = new Date(dateTo);
@@ -74,7 +78,7 @@ export const fetchLogsRange = async (dateFrom: string, dateTo: string, level?: s
     }
   }
 
-  const allEntries: any[] = [];
+  const allEntries: LogEntry[] = [];
   for (const filePath of filesToRead) {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
@@ -83,9 +87,13 @@ export const fetchLogsRange = async (dateFrom: string, dateTo: string, level?: s
         try {
           const entry = JSON.parse(line);
           if (entry && entry.timestamp && entry.level) allEntries.push(entry);
-        } catch {}
+        } catch {
+          // невалидная строка лога — пропускаем
+        }
       }
-    } catch {}
+    } catch {
+      // файл не читается — пропускаем
+    }
   }
 
   allEntries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());

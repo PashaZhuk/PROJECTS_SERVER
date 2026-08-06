@@ -1,11 +1,12 @@
 import { prisma } from '../config/db.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 export async function getEventLog(params: { page?: number; limit?: number; action?: string } = {}) {
   const page = Math.max(1, params.page || 1);
   const limit = Math.min(500, Math.max(1, params.limit || 200));
   const skip = (page - 1) * limit;
 
-  const where: any = {};
+  const where: Prisma.EventLogWhereInput = {};
   if (params.action) where.action = params.action;
 
   const [items, total] = await Promise.all([

@@ -1,11 +1,11 @@
 // src/services/userService.ts
 import bcrypt from 'bcrypt';
 import { prisma } from '../config/db.js';
-import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
+import { emitStatsUpdate, getOnlineUserIds, getIo } from './statsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import type { LogMeta } from '../types/express.js';
-import type { Socket } from 'socket.io';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 export const getUsersList = async (params: {
   page: number;
@@ -19,15 +19,16 @@ export const getUsersList = async (params: {
   const skip = (Number(page) - 1) * take;
   // B17: экранируем wildcard-символы % и _ для ILIKE-поиска
   const escapedSearch = (search || '').trim().replace(/[%_]/g, '\\$&');
-  const where: any = {
+  // B4: типизированный where вместо any
+  const where: Prisma.UserWhereInput = {
     role: { not: 'ADMIN' },
-    ...(role && role !== 'ALL' && { role }),
+    ...(role && role !== 'ALL' && { role: role as 'USER' | 'MANAGER' }),
     ...(escapedSearch && {
       OR: [
-        { name: { contains: escapedSearch, mode: 'insensitive' } },
-        { email: { contains: escapedSearch, mode: 'insensitive' } },
-        { companyName: { contains: escapedSearch, mode: 'insensitive' } },
-        { unp: { contains: escapedSearch, mode: 'insensitive' } },
+        { name: { contains: escapedSearch, mode: 'insensitive' as const } },
+        { email: { contains: escapedSearch, mode: 'insensitive' as const } },
+        { companyName: { contains: escapedSearch, mode: 'insensitive' as const } },
+        { unp: { contains: escapedSearch, mode: 'insensitive' as const } },
       ],
     }),
   };
@@ -47,13 +48,8 @@ export const getUsersList = async (params: {
     prisma.user.count({ where }),
   ]);
 
-  const io = getIo();
-  const onlineUserIds = new Set<number>();
-  if (io) {
-    io.sockets.sockets.forEach((s: Socket) => {
-      if (s.data?.userId) onlineUserIds.add(s.data.userId);
-    });
-  }
+  // B8: используем Map из statsService вместо итерации по всем сокетам
+  const onlineUserIds = getOnlineUserIds();
   const usersWithOnlineStatus = users.map(u => ({
     ...u,
     isOnline: onlineUserIds.has(u.id),
@@ -80,7 +76,7 @@ export const toggleBlockUser = async (id: number, currentUserId: number, logMeta
   if (user.role === 'ADMIN') throw new AppError(400, 'Нельзя заблокировать администратора');
 
   let newBlockedState = !user.isBlocked;
-  let message = '';
+  let message: string;
   const now = new Date();
   const isLoginLocked = user.lockUntil && user.lockUntil > now;
   const is2FALocked = user.twoFactorLockUntil && user.twoFactorLockUntil > now;

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Response } from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
@@ -24,13 +24,14 @@ import newsRoutes from './routes/newsRoutes.js';
 import integrationRoutes from './routes/integrationRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import logger from './utils/logger.js';
-import { setIo, fetchStatsInternal, emitStatsUpdate } from './services/statsService.js';
+import { setIo, fetchStatsInternal, emitStatsUpdate, registerSocket, unregisterSocket } from './services/statsService.js';
 
 config();
 
 // B9: Fail-fast proverca JWT_SECRET na starte servera
+// B15: заменён console.error на logger.error
 if (!process.env.JWT_SECRET) {
-  console.error(' FATAL: JWT_SECRET is not defined. Server cannot start.');
+  logger.error('FATAL: JWT_SECRET is not defined. Server cannot start.');
   process.exit(1);
 }
 
@@ -183,9 +184,9 @@ io.use(async (socket, next) => {
     socket.data.userId = user.id;
     socket.data.userRole = user.role;
     next();
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Если JWT истёк — пробуем обновить через refreshToken
-    if (err.name === 'TokenExpiredError') {
+    if (err instanceof Error && err.name === 'TokenExpiredError') {
       try {
         const cookieHeader = socket.handshake.headers.cookie;
         const cookies = parseCookies(cookieHeader);
@@ -193,8 +194,8 @@ io.use(async (socket, next) => {
         if (!rawRefresh) return next(new Error('Authentication error: no refresh token'));
 
         // B13: используем rotateRefreshToken с детектом reuse вместо ручной ротации
-        const res = (socket as any).request?.res;
-        const result = await rotateRefreshToken(rawRefresh, res);
+        const res = (socket as unknown as { request?: { res?: Response } }).request?.res;
+        const result = await rotateRefreshToken(rawRefresh, res!);
 
         if (!result.success) {
           return next(new Error('Authentication error: invalid refresh token'));
@@ -224,6 +225,10 @@ io.on('connection', (socket) => {
 
   logger.info('New connection: ' + socket.id + ' (user ' + user.id + ', ' + user.role + ')');
 
+  // B8: регистрируем сокет в Map для быстрого подсчёта онлайн-пользователей
+  const displayName = user.companyName || user.name || '';
+  registerSocket(socket.id, user.id, user.role, displayName);
+
   socket.join('user_' + user.id);
   if (user.role === 'ADMIN' || user.role === 'MANAGER') {
     socket.join('admin_room');
@@ -235,15 +240,34 @@ io.on('connection', (socket) => {
     emitStatsUpdate();
   }
 
-  socket.on('join_project', ({ projectId }) => {
+  socket.on('join_project', async ({ projectId }) => {
     if (!projectId) return;
-    const room = 'project_' + projectId;
-    socket.join(room);
-    logger.info('[Socket] ' + user.name + ' (' + user.role + ') joined room: ' + room);
+    // B10: проверка доступа к проекту перед join (IDOR-защита)
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: Number(projectId) },
+        select: { partnerId: true },
+      });
+      if (!project) {
+        logger.warn('[Socket] ' + user.name + ' tried to join non-existent project ' + projectId);
+        return;
+      }
+      if (user.role !== 'MANAGER' && user.role !== 'ADMIN' && project.partnerId !== user.id) {
+        logger.warn('[Socket] ' + user.name + ' (' + user.role + ') denied access to project ' + projectId);
+        return;
+      }
+      const room = 'project_' + projectId;
+      socket.join(room);
+      logger.info('[Socket] ' + user.name + ' (' + user.role + ') joined room: ' + room);
+    } catch (err) {
+      logger.error('[Socket] join_project error: ' + (err as Error).message);
+    }
   });
 
   socket.on('user_logging_out', async () => {
     logger.info('User ' + user.id + ' logged out intentionally');
+    // B8: разрегистрируем сокет из Map
+    unregisterSocket(socket.id, user.id);
     socket.leave('user_' + user.id);
     socket.leave('admin_room');
     if (user.role !== 'ADMIN') {
@@ -254,6 +278,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     logger.info('Disconnected: ' + socket.id + ', user ' + user.id);
+    // B8: разрегистрируем сокет из Map
+    unregisterSocket(socket.id, user.id);
     setTimeout(async () => {
       const activeSockets = await io.fetchSockets();
       const stillConnected = activeSockets.some(s => s.data.userId === user.id);
@@ -278,8 +304,8 @@ const gracefulShutdown = async (signal: string) => {
     await disconnectDB();
     logger.info('Graceful shutdown complete.');
     process.exit(0);
-  } catch (err: any) {
-    logger.error('Error during graceful shutdown:', { error: err.message });
+  } catch (err: unknown) {
+    logger.error('Error during graceful shutdown:', { error: err instanceof Error ? err.message : String(err) });
     process.exit(1);
   }
 };

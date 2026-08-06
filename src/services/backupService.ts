@@ -1,4 +1,4 @@
-import { exec, execSync, spawn } from 'child_process';
+import { exec, spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import multer from 'multer';
@@ -9,9 +9,10 @@ import logger from '../utils/logger.js';
 // ─── Конфигурация ───
 
 const BACKUP_DIR = path.join(process.cwd(), 'backups');
-const CONTAINER_NAME = 'projects_postgres_18';
-const DB_NAME = 'b2b_portal';
-const DB_USER = 'admin';
+// B2: хардкод-секреты вынесены в .env — без дефолтов с реальными значениями
+const CONTAINER_NAME = process.env.BACKUP_CONTAINER_NAME ?? '';
+const DB_NAME = process.env.BACKUP_DB_NAME ?? '';
+const DB_USER = process.env.BACKUP_DB_USER ?? '';
 
 // ─── Multer (загрузка файлов) ───
 
@@ -58,9 +59,19 @@ function timestamp(): string {
 
 // ─── Проверка доступности Docker/контейнера ───
 
+// B18: заменён execSync на exec с Promise — не блокирует event loop
+function execAsync(cmd: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { timeout: timeoutMs }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout);
+    });
+  });
+}
+
 async function checkDockerAvailable(): Promise<boolean> {
   try {
-    execSync(`docker ps --format "{{.Names}}"`, { stdio: 'pipe', timeout: 5000 });
+    await execAsync(`docker ps --format "{{.Names}}"`, 5000);
     return true;
   } catch {
     return false;
@@ -69,10 +80,10 @@ async function checkDockerAvailable(): Promise<boolean> {
 
 async function checkContainerRunning(): Promise<boolean> {
   try {
-    const out = execSync(
+    const out = (await execAsync(
       `docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}"`,
-      { stdio: 'pipe', timeout: 5000 }
-    ).toString().trim();
+      5000
+    )).trim();
     return out === CONTAINER_NAME;
   } catch {
     return false;
@@ -127,9 +138,10 @@ export async function createBackup(): Promise<{ success: boolean; filename?: str
         const sizeMB = (Buffer.byteLength(stdout, 'utf-8') / 1024 / 1024).toFixed(1);
         logger.info(`[backup] saved: ${filename} (${sizeMB} MB)`);
         resolve({ success: true, filename });
-      } catch (err: any) {
-        logger.error(`[backup] write error: ${err.message}`);
-        resolve({ success: false, error: `Ошибка записи файла: ${err.message}` });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[backup] write error: ${msg}`);
+        resolve({ success: false, error: `Ошибка записи файла: ${msg}` });
       }
     });
   });
@@ -164,9 +176,10 @@ export async function restoreBackup(filename: string): Promise<{ success: boolea
     return { success: false, error: `Контейнер ${CONTAINER_NAME} не запущен.` };
   }
 
-  return new Promise(async (resolve) => {
-    try {
-      const sqlContent = await fs.readFile(filepath, 'utf-8');
+  return new Promise((resolve) => {
+    (async () => {
+      try {
+        const sqlContent = await fs.readFile(filepath, 'utf-8');
 
       if (!sqlContent || sqlContent.trim().length === 0) {
         resolve({ success: false, error: 'Файл бэкапа пуст' });
@@ -216,10 +229,12 @@ export async function restoreBackup(filename: string): Promise<{ success: boolea
           resolve({ success: false, error: `psql завершился с кодом ${code}${brief ? ': ' + brief : ''}` });
         }
       });
-    } catch (err: any) {
-      logger.error(`[restore] error: ${err.message}`);
-      resolve({ success: false, error: `Ошибка восстановления: ${err.message}` });
-    }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[restore] error: ${msg}`);
+        resolve({ success: false, error: `Ошибка восстановления: ${msg}` });
+      }
+    })();
   });
 }
 
@@ -277,8 +292,8 @@ export async function deleteBackup(filename: string): Promise<boolean> {
     await fs.unlink(filepath);
     logger.info(`[backup] deleted: ${filename}`);
     return true;
-  } catch (err: any) {
-    logger.error(`[backup] delete error: ${err.message}`);
+  } catch (err: unknown) {
+    logger.error(`[backup] delete error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

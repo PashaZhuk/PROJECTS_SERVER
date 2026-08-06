@@ -1,21 +1,28 @@
+import type { Response } from 'express';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '../config/db.js';
-import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generateAccessToken, setAccessTokenCookie, generatePreAuthToken, setPreAuthCookie, clearPreAuthCookie } from '../utils/generateToken.js';
+import { generateTokens, revokeUserRefreshTokens, clearRefreshCookie, generatePreAuthToken, setPreAuthCookie, clearPreAuthCookie } from '../utils/generateToken.js';
 import { sendEmail, generateResetPasswordEmail, generateWelcomeEmail } from './emailService.js';
 import { emitStatsUpdate, emitUserLockStatus, getIo } from './statsService.js';
 import { sendSms } from './smsService.js';
 import { AppError } from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import type { LogMeta } from '../types/express.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 const MAX_2FA_ATTEMPTS = 3;
 const LOCK_DURATION_MS = 15 * 60 * 1000;
 const CODE_RESEND_DELAY_MS = 60 * 1000;
 const CODE_EXPIRY_MS = 5 * 60 * 1000; // 5 минут
 
-const check2FALock = (user: any) => {
+// B4: тип для check2FALock — только нужные поля пользователя
+interface User2FAFields {
+  twoFactorLockUntil: Date | null;
+}
+
+const check2FALock = (user: User2FAFields) => {
   if (user.twoFactorLockUntil && user.twoFactorLockUntil > new Date()) {
     const timeLeft = Math.ceil((user.twoFactorLockUntil.getTime() - Date.now()) / 1000);
     return { locked: true, timeLeft };
@@ -73,7 +80,8 @@ export const registerUser = async (
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(password, salt);
 
-  const createData: any = {
+  // B4: типизированный createData вместо any
+  const createData: Prisma.UserCreateInput = {
     name: finalName,
     email: email.toLowerCase().trim(),
     password: hashedPassword,
@@ -95,8 +103,8 @@ export const registerUser = async (
   // B18: не ронять регистрацию при сбое email — юзер уже создан, логируем и продолжаем
   try {
     await sendWelcomeEmailToUser(user.email, user.name || user.companyName || 'Партнер', password);
-  } catch (emailErr: any) {
-    logger.error('Welcome email failed - user created anyway', { userId: user.id, email: user.email, error: emailErr.message, ...logMeta });
+  } catch (emailErr: unknown) {
+    logger.error('Welcome email failed - user created anyway', { userId: user.id, email: user.email, error: emailErr instanceof Error ? emailErr.message : String(emailErr), ...logMeta });
   }
   logger.info('User registered', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, role: user.role, ...logMeta });
   return user;
@@ -105,11 +113,11 @@ export const registerUser = async (
 export const loginUser = async (
   email: string,
   password: string,
-  res: any,
+  res: Response,
   logMeta?: LogMeta
 ) => {
   const user = await prisma.user.findUnique({ where: { email } });
-  const enrichLogMeta = (extra?: any) => {
+  const enrichLogMeta = (extra?: Record<string, unknown>) => {
     if (!user) return { ...logMeta, ...extra };
     return {
       ...logMeta,
@@ -200,7 +208,7 @@ export const loginUser = async (
 export const send2FACodeService = async (userId: number, logMeta?: LogMeta): Promise<{ debugCode?: string }> => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
-  const enrichLogMeta = (extra?: any) => ({
+  const enrichLogMeta = (extra?: Record<string, unknown>) => ({
     ...logMeta,
     userId: user.id,
     email: user.email,
@@ -275,10 +283,10 @@ export const send2FACodeService = async (userId: number, logMeta?: LogMeta): Pro
   return returnDebugCode(`SMS ID: ${smsResult.messageId}`);
 };
 
-export const verify2FACodeService = async (userId: number, code: string, res: any, logMeta?: LogMeta) => {
+export const verify2FACodeService = async (userId: number, code: string, res: Response, logMeta?: LogMeta) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new AppError(404, 'Пользователь не найден');
-  const enrichLogMeta = (extra?: any) => ({
+  const enrichLogMeta = (extra?: Record<string, unknown>) => ({
     ...logMeta,
     userId: user.id,
     email: user.email,
@@ -368,7 +376,7 @@ export const verify2FACodeService = async (userId: number, code: string, res: an
   };
 };
 
-export const logoutUser = async (userId: number | undefined, res?: any, logMeta?: LogMeta) => {
+export const logoutUser = async (userId: number | undefined, res?: Response, logMeta?: LogMeta) => {
   if (userId) {
     const oldDate = new Date(Date.now() - 10 * 60 * 1000);
 
@@ -420,6 +428,15 @@ export const resetPasswordService = async (token: string, newPassword: string, l
     where: { id: user.id },
     data: { password: hashedPassword, resetPasswordToken: null, resetPasswordExpires: null, mustChangePassword: false },
   });
+  // B14: отзываем все refresh-токены и сбрасываем сессию после сброса пароля
+  await prisma.refreshToken.updateMany({
+    where: { userId: user.id, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { currentSessionId: null },
+  });
   logger.info('Password reset successfully', { userId: user.id, email: user.email, name: user.name, companyName: user.companyName, displayName: user.companyName || user.name || `User ${user.id}`, ...logMeta });
 };
 
@@ -436,6 +453,15 @@ export const changePasswordService = async (userId: number, currentPassword: str
   await prisma.user.update({
     where: { id: userId },
     data: { password: hashedPassword },
+  });
+  // B13: отзываем все refresh-токены и сбрасываем сессию после смены пароля
+  await prisma.refreshToken.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { currentSessionId: null },
   });
   
   logger.info('Password changed', { userId, email: user.email, ...logMeta });

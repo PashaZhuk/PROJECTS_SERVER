@@ -48,9 +48,9 @@ export const sendEmail = async ({ to, subject, html, attachments }: SendMailOpti
     });
     logger.info(`Email sent to ${to}: ${info.messageId}`);
     return true;
-  } catch (error: any) {
-    logger.error(`Error sending email to ${to}:`, { error: error.message });
-    throw new Error('Не удалось отправить письмо');
+  } catch (error: unknown) {
+    logger.error(`Error sending email to ${to}:`, { error: error instanceof Error ? error.message : String(error) });
+    throw new Error('Не удалось отправить письмо', { cause: error });
   }
 };
 

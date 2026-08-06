@@ -1,10 +1,9 @@
 import { AppError } from '../utils/AppError.js';
 
 // --- Config ---
-const ONEC_BASE_URL =
-  process.env.ONEC_BASE_URL ??
-  'http://192.168.85.85:8080/UT_TEST/hs/api/integration';
-const ONEC_USER = process.env.ONEC_USER ?? 'B2BAPI';
+// B3: хардкод IP и дефолт-пользователь убраны — значения только из .env
+const ONEC_BASE_URL = process.env.ONEC_BASE_URL ?? '';
+const ONEC_USER = process.env.ONEC_USER ?? '';
 const ONEC_PASS = process.env.ONEC_PASS ?? '';
 
 // --- Types ---

@@ -1,4 +1,5 @@
 import { prisma } from '../config/db.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 export const getSetting = async (key: string) => {
   const record = await prisma.siteSetting.findUnique({ where: { key } });
@@ -17,8 +18,8 @@ export const getAllSettings = async () => {
 export const upsertSetting = async (key: string, value: unknown) => {
   const record = await prisma.siteSetting.upsert({
     where: { key },
-    create: { key, value: value as any },
-    update: { value: value as any },
+    create: { key, value: value as Prisma.InputJsonValue },
+    update: { value: value as Prisma.InputJsonValue },
   });
   return record.value;
 };

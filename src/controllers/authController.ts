@@ -11,7 +11,7 @@ import {
 } from '../services/authService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { AppError } from '../utils/AppError.js';
-import { rotateRefreshToken, clearRefreshCookie, verifyPreAuthToken, clearPreAuthCookie } from '../utils/generateToken.js';
+import { rotateRefreshToken, verifyPreAuthToken, clearPreAuthCookie } from '../utils/generateToken.js';
 import { sendSuccess, sendError } from '../utils/response.js';
 import type { AuthRequest } from '../types/express.js';
 
@@ -79,7 +79,7 @@ export const logout = asyncHandler(async (req: AuthRequest, res: Response) => {
 export const getProfile = asyncHandler(async (req: AuthRequest, res: Response) => {
   const user = req.user;
   if (!user) throw new AppError(404, 'User not found');
-  const { password, ...userData } = user;
+  const { password: _password, ...userData } = user;
   sendSuccess(res, userData);
 });
 

@@ -11,7 +11,6 @@ import {
   uploadMiddleware,
   getSchedule,
   setSchedule,
-  stopSchedule,
 } from '../services/backupService.js';
 import fs from 'fs';
 
@@ -27,12 +26,14 @@ export const createBackupHandler = asyncHandler(async (_req: Request, res: Respo
 
 /** POST /api/admin/backup/upload — загрузить .sql файл */
 export const uploadBackupHandler = asyncHandler(async (req: Request, res: Response) => {
-  uploadMiddleware(req, res, (err: any) => {
+  uploadMiddleware(req, res, (err: unknown) => {
     if (err) {
       if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
         sendError(res, 413, 'Файл слишком большой (максимум 500 MB)');
-      } else {
+      } else if (err instanceof Error) {
         sendError(res, 400, err.message || 'Ошибка загрузки файла');
+      } else {
+        sendError(res, 400, 'Ошибка загрузки файла');
       }
       return;
     }

@@ -26,7 +26,9 @@ export const registerSchema = z.object({
   }
 });
 
+// B12: currentPassword обязателен — контроллер уже использует req.body.currentPassword
 export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Текущий пароль обязателен'),
   newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
 });
 
@@ -92,21 +94,6 @@ export const broadcastSchema = z.object({
 // B15: Валидация dynamicData — Record<string, unknown> с лимитом полей и длины строк
 const MAX_DYNAMIC_FIELDS = 50;
 const MAX_DYNAMIC_STRING_LENGTH = 500;
-
-const dynamicDataSchema = z.record(z.string(), z.unknown()).refine(
-  (data) => Object.keys(data).length <= MAX_DYNAMIC_FIELDS,
-  { message: `Слишком много полей в dynamicData (максимум ${MAX_DYNAMIC_FIELDS})` }
-).refine(
-  (data) => {
-    for (const value of Object.values(data)) {
-      if (typeof value === 'string' && value.length > MAX_DYNAMIC_STRING_LENGTH) {
-        return false;
-      }
-    }
-    return true;
-  },
-  { message: `Значения строк в dynamicData не могут быть длиннее ${MAX_DYNAMIC_STRING_LENGTH} символов` }
-);
 
 const baseProjectSchema = z.object({
   formType: z.string().min(1, 'Не выбран тип формы'),

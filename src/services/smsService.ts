@@ -66,14 +66,15 @@ export async function sendSms(
         parameter: data.error?.parameter,
       },
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
     logger.error('Ошибка HTTP при отправке SMS', {
-      error: err.message,
+      error: msg,
       phone: phone.replace(/\d{4}$/, '****'),
     });
     return {
       success: false,
-      error: { code: -1, description: `Ошибка сети: ${err.message}` },
+      error: { code: -1, description: `Ошибка сети: ${msg}` },
     };
   }
 }

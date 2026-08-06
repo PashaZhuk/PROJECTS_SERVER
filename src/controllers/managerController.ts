@@ -1,4 +1,4 @@
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { prisma } from '../config/db.js';
 import { sendEmail } from '../services/emailService.js';
@@ -52,7 +52,7 @@ export const sendBroadcast = asyncHandler(async (req: AuthRequest, res: Response
   let sent = 0;
   const failed: Array<{ id: number; email: string; error: string }> = [];
 
-  const results = await Promise.allSettled(
+  await Promise.allSettled(
     recipients.map(async (recipient) => {
       try {
         await sendEmail({
@@ -60,7 +60,7 @@ export const sendBroadcast = asyncHandler(async (req: AuthRequest, res: Response
           subject,
           html: sanitizeHtml(message),
           attachments: attachments
-            ? attachments.map((att: any) => ({
+            ? attachments.map((att: { filename?: string; content?: string; encoding?: string }) => ({
                 filename: att.filename,
                 content: att.content,
                 encoding: att.encoding || 'base64',
@@ -68,8 +68,8 @@ export const sendBroadcast = asyncHandler(async (req: AuthRequest, res: Response
             : undefined,
         });
         sent++;
-      } catch (err: any) {
-        failed.push({ id: recipient.id, email: recipient.email!, error: err.message });
+      } catch (err: unknown) {
+        failed.push({ id: recipient.id, email: recipient.email!, error: err instanceof Error ? err.message : 'Ошибка отправки' });
       }
     })
   );

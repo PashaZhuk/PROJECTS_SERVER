@@ -1,4 +1,5 @@
 import { prisma } from '../config/db.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 
 export interface EquipmentInput {
   category: string;
@@ -27,7 +28,7 @@ export async function getEquipmentList(params: EquipmentFilter = {}) {
   const perPage = Math.min(100, Math.max(1, params.perPage || 50));
   const skip = (page - 1) * perPage;
 
-  const where: any = {};
+  const where: Prisma.TestEquipmentWhereInput = {};
   if (params.category) where.category = params.category;
   if (params.status) where.status = params.status;
   if (params.search) {

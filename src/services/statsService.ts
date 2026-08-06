@@ -1,6 +1,6 @@
 import { prisma } from '../config/db.js';
 import logger from '../utils/logger.js';
-import type { Server, Socket } from 'socket.io';
+import type { Server } from 'socket.io';
 
 let globalIo: Server | null = null;
 
@@ -11,34 +11,68 @@ export const setIo = (io: Server) => {
 
 export const getIo = () => globalIo;
 
+// B8: Map<userId, { role, displayName, socketIds: Set<string> }> —
+// поддерживается при connect/disconnect, вместо итерации по всем сокетам.
+interface OnlineUserEntry {
+  role: string;
+  displayName: string;
+  socketIds: Set<string>;
+}
+
+const onlineUsersMap = new Map<number, OnlineUserEntry>();
+
+/** Зарегистрировать сокет при подключении */
+export const registerSocket = (socketId: string, userId: number, role: string, displayName: string) => {
+  let entry = onlineUsersMap.get(userId);
+  if (!entry) {
+    entry = { role, displayName, socketIds: new Set<string>() };
+    onlineUsersMap.set(userId, entry);
+  }
+  entry.socketIds.add(socketId);
+};
+
+/** Разрегистрировать сокет при отключении */
+export const unregisterSocket = (socketId: string, userId: number) => {
+  const entry = onlineUsersMap.get(userId);
+  if (!entry) return;
+  entry.socketIds.delete(socketId);
+  if (entry.socketIds.size === 0) {
+    onlineUsersMap.delete(userId);
+  }
+};
+
+/** Получить Set всех онлайн user IDs (для проверки isOnline в списках пользователей) */
+export const getOnlineUserIds = (): Set<number> => {
+  const ids = new Set<number>();
+  for (const [userId] of onlineUsersMap) {
+    ids.add(userId);
+  }
+  return ids;
+};
+
+/** Очистить Map онлайн-пользователей (для тестов) */
+export const clearOnlineUsersMap = (): void => {
+  onlineUsersMap.clear();
+};
+
 export const getOnlineUsersFromSockets = () => {
-  const io = getIo();
-  if (!io) return { onlineUsers: 0, onlineManagers: 0, onlineUserNames: [] as string[], onlineManagerNames: [] as string[] };
-  const uniqueUsers = new Set<number>();
-  const uniqueManagers = new Set<number>();
+  // B8: читаем из Map вместо forEach по всем сокетам — O(n) по пользователям, а не по сокетам
   const userNames: string[] = [];
   const managerNames: string[] = [];
-  const sockets = io.sockets.sockets;
-  sockets.forEach((socket: Socket) => {
-    const userId = socket.data?.userId;
-    const userRole = socket.data?.userRole;
-    const displayName = socket.data?.user?.companyName || socket.data?.user?.name || '';
-    if (userId) {
-      if (userRole === 'ADMIN') return;
-      if (userRole === 'MANAGER') {
-        if (!uniqueManagers.has(userId)) {
-          uniqueManagers.add(userId);
-          if (displayName) managerNames.push(displayName);
-        }
-      } else if (userRole === 'USER') {
-        if (!uniqueUsers.has(userId)) {
-          uniqueUsers.add(userId);
-          if (displayName) userNames.push(displayName);
-        }
-      }
+  let onlineUsers = 0;
+  let onlineManagers = 0;
+
+  for (const [, entry] of onlineUsersMap) {
+    if (entry.role === 'ADMIN') continue;
+    if (entry.role === 'MANAGER') {
+      onlineManagers++;
+      if (entry.displayName) managerNames.push(entry.displayName);
+    } else {
+      onlineUsers++;
+      if (entry.displayName) userNames.push(entry.displayName);
     }
-  });
-  return { onlineUsers: uniqueUsers.size, onlineManagers: uniqueManagers.size, onlineUserNames: userNames, onlineManagerNames: managerNames };
+  }
+  return { onlineUsers, onlineManagers, onlineUserNames: userNames, onlineManagerNames: managerNames };
 };
 
 export const fetchStatsInternal = async () => {
@@ -61,7 +95,8 @@ export const fetchStatsInternal = async () => {
 
 export const emitStatsUpdate = async () => {
   const io = getIo();
-  if (!io) return;
+  // Защита от моков/неполных объектов в тестах — проверяем наличие to()
+  if (!io || typeof io.to !== 'function') return;
   try {
     const stats = await fetchStatsInternal();
     io.to('admin_room').emit('stats_updated', stats);
@@ -81,7 +116,8 @@ export const emitUserLockStatus = (
   }
 ) => {
   const io = getIo();
-  if (!io) {
+  // Защита от моков/неполных объектов в тестах — проверяем наличие to()
+  if (!io || typeof io.to !== 'function') {
     logger.warn('⚠️ emitUserLockStatus: io not set, skipping');
     return;
   }
