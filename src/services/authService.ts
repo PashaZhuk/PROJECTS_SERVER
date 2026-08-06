@@ -136,6 +136,21 @@ export const loginUser = async (
     return { success: false, userBlocked: true };
   }
 
+  // Сброс истёкших блокировок: lock больше не действует — даём полный набор попыток.
+  // Без этого счётчик навсегда остаётся >= 5 и любая следующая ошибка = мгновенный повторный лок.
+  if (user && user.lockUntil && user.lockUntil <= new Date() && user.failedLoginAttempts > 0) {
+    await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockUntil: null } });
+    emitUserLockStatus(user.id, { lockUntil: null, failedLoginAttempts: 0 });
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
+  }
+  if (user && user.twoFactorLockUntil && user.twoFactorLockUntil <= new Date() && user.twoFactorAttempts > 0) {
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorAttempts: 0, twoFactorLockUntil: null } });
+    emitUserLockStatus(user.id, { twoFactorLockUntil: null, twoFactorAttempts: 0 });
+    user.twoFactorAttempts = 0;
+    user.twoFactorLockUntil = null;
+  }
+
   if (user && user.lockUntil && user.lockUntil > new Date()) {
     const timeLeft = Math.ceil((user.lockUntil.getTime() - Date.now()) / 1000);
     logger.warn('Login blocked (password lock)', enrichLogMeta({ timeLeft }));

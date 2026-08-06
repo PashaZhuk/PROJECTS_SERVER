@@ -163,6 +163,72 @@ describe('loginUser', () => {
       // при 2FA счётчик не сбрасывается до verify, но тест проверяет только сам вход
     }
   })
+
+  it('сбрасывает истёкшую блокировку пароля — даёт полные 5 попыток заново', async () => {
+    await registerUser(USER_DATA)
+    const { prisma } = await import('../../src/config/db.js')
+    const user = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+    // 5 неудачных попыток + lock истёк минуту назад
+    await prisma.user.update({
+      where: { id: user!.id },
+      data: { failedLoginAttempts: 5, lockUntil: new Date(Date.now() - 60_000) },
+    })
+
+    const res = mockRes()
+    // Неверный пароль ПОСЛЕ истечения — НЕ мгновенный повторный лок, а обычная 1-я попытка
+    const result = await loginUser(USER_DATA.email, 'wrong-password', res)
+    expect(result.success).toBe(false)
+    expect(result.attemptsLeft).toBe(4) // счётчик сброшен, начинаем с 5
+    expect(result.lockType).toBeUndefined()
+
+    // В БД счётчик действительно обнулён
+    const after = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+    expect(after!.failedLoginAttempts).toBe(1)
+    expect(after!.lockUntil).toBeNull()
+  })
+
+  it('сбрасывает истёкшую блокировку 2FA — вход не блокируется', async () => {
+    await registerUser(USER_DATA)
+    const { prisma } = await import('../../src/config/db.js')
+    const user = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+    // 3 неверных 2FA-кода + lock истёк минуту назад
+    await prisma.user.update({
+      where: { id: user!.id },
+      data: { twoFactorAttempts: 3, twoFactorLockUntil: new Date(Date.now() - 60_000) },
+    })
+
+    const res = mockRes()
+    const result = await loginUser(USER_DATA.email, USER_DATA.password, res)
+    // lockType: '2FA' не должен вернуться — блокировка сброшена
+    expect(result.lockType).toBeUndefined()
+    if (process.env.DISABLE_2FA === 'true') {
+      expect(result.success).toBe(true)
+    } else {
+      expect(result.requires2FA).toBe(true)
+    }
+
+    const after = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+    expect(after!.twoFactorAttempts).toBe(0)
+    expect(after!.twoFactorLockUntil).toBeNull()
+  })
+
+  it('НЕ сбрасывает активную блокировку пароля', async () => {
+    await registerUser(USER_DATA)
+    const { prisma } = await import('../../src/config/db.js')
+    const user = await prisma.user.findUnique({ where: { email: USER_DATA.email } })
+    // lock активен (в будущем)
+    await prisma.user.update({
+      where: { id: user!.id },
+      data: { failedLoginAttempts: 5, lockUntil: new Date(Date.now() + 60_000) },
+    })
+
+    const res = mockRes()
+    // Даже правильный пароль не проходит, пока lock активен
+    const result = await loginUser(USER_DATA.email, USER_DATA.password, res)
+    expect(result.success).toBe(false)
+    expect(result.lockType).toBe('password')
+    expect(result.timeLeft).toBeGreaterThan(0)
+  })
 })
 
 // ================================================================
