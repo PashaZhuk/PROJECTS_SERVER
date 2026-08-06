@@ -3,14 +3,14 @@ import { getUsers, deleteUser, changeDefaultPassword, getAdminStats, toggleBlock
 import { authMiddleware } from '../middleware/authMiddleware';
 import { adminMiddleware } from '../middleware/adminMiddleware';
 import { validate } from '../middleware/validate';
-import { changePasswordSchema } from '../utils/validationSchemas';
+import { forceChangePasswordSchema } from '../utils/validationSchemas';
 
 const router = express.Router();
 
 router.get('/users', authMiddleware, adminMiddleware, getUsers);
 router.delete('/users/:id', authMiddleware, adminMiddleware, deleteUser);
 router.patch('/users/:id/block', authMiddleware, adminMiddleware, toggleBlock);
-router.post('/change-password', authMiddleware, validate(changePasswordSchema), changeDefaultPassword);
+router.post('/change-password', authMiddleware, validate(forceChangePasswordSchema), changeDefaultPassword);
 router.get('/admin/stats', authMiddleware, adminMiddleware, getAdminStats);
 
 export default router;

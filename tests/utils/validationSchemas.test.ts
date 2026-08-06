@@ -11,6 +11,7 @@ const {
   updateProjectStatusSchema,
   sendMessageSchema,
   changePasswordSchema,
+  forceChangePasswordSchema,
 } = await import('../../src/utils/validationSchemas.js')
 
 const safeParse = (schema: any, data: any) => {
@@ -155,6 +156,18 @@ describe('changePasswordSchema', () => {
 
   it('отклоняет короткий новый пароль', () => {
     const r = safeParse(changePasswordSchema, { currentPassword: 'old', newPassword: 'new' })
+    expect(r.success).toBe(false)
+  })
+})
+
+describe('forceChangePasswordSchema', () => {
+  it('валидирует только newPassword (без currentPassword — принудительная смена)', () => {
+    const r = safeParse(forceChangePasswordSchema, { newPassword: 'new123' })
+    expect(r.success).toBe(true)
+  })
+
+  it('отклоняет короткий новый пароль', () => {
+    const r = safeParse(forceChangePasswordSchema, { newPassword: 'new' })
     expect(r.success).toBe(false)
   })
 })

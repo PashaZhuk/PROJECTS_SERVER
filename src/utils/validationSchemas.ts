@@ -32,6 +32,13 @@ export const changePasswordSchema = z.object({
   newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
 });
 
+// Принудительная смена пароля (первый вход, mustChangePassword=true):
+// текущий пароль НЕ запрашивается — юзер логинился с временным паролем от админа.
+// Отдельная схема от changePasswordSchema (B12 добавил currentPassword только для auth/change-password).
+export const forceChangePasswordSchema = z.object({
+  newPassword: z.string().min(6, 'Пароль должен быть не менее 6 символов'),
+});
+
 export const forgotPasswordSchema = z.object({
   email: z.string().regex(/@/, 'Некорректный email'),
 });
