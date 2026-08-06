@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import jwt from 'jsonwebtoken'
+import crypto from 'crypto'
 import { registerUser } from '../../src/services/authService.js'
 import { prisma } from '../../src/config/db.js'
 
@@ -158,7 +159,7 @@ describe('rotateRefreshToken', () => {
     expect(result.success).toBe(true)
     expect(result.accessToken).toBeDefined()
     expect(result.user).toBeDefined()
-    expect(result.user.email).toBe(USER_DATA.email)
+    expect(result.user!.email).toBe(USER_DATA.email)
 
     // Старый токен отозван
     const oldHash = cryptoHash(oldRaw)
@@ -281,6 +282,5 @@ describe('revokeUserRefreshTokens', () => {
 // ---------- internal ----------
 
 function cryptoHash(token: string): string {
-  const crypto = require('crypto')
   return crypto.createHash('sha256').update(token).digest('hex')
 }

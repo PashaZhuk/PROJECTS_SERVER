@@ -7,7 +7,6 @@ vi.mock('../../src/services/statsService.js', () => ({
 }))
 
 const { getCompanies } = await import('../../src/services/companyService.js')
-const { registerUser } = await import('../../src/services/authService.js')
 const { prisma } = await import('../../src/config/db.js')
 
 beforeEach(async () => {

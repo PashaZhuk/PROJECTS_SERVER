@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const { mockValidate, mockSchedule } = vi.hoisted(() => ({
+  mockValidate: vi.fn(),
+  mockSchedule: vi.fn(() => ({ stop: vi.fn() })),
+}))
+
 // Мокаем node-cron — setSchedule использует cron.validate и cron.schedule.
-// В ESM `import cron from 'node-cron'` берёт default export, поэтому мокаем default.
-vi.mock('node-cron', () => {
-  const mockCron = {
-    validate: vi.fn(),
-    schedule: vi.fn(() => ({ stop: vi.fn() })),
-  }
-  return { default: mockCron }
-})
+// В ESM node-cron экспортирует default-объект.
+vi.mock('node-cron', () => ({
+  default: {
+    validate: mockValidate,
+    schedule: mockSchedule,
+  },
+  validate: mockValidate,
+  schedule: mockSchedule,
+}))
 
 // Мокаем fs/promises — restoreBackup использует fs.access и fs.mkdir
 vi.mock('fs/promises', async (importOriginal) => {
@@ -26,7 +32,6 @@ vi.mock('fs/promises', async (importOriginal) => {
 })
 
 const { restoreBackup, setSchedule } = await import('../../src/services/backupService.js')
-const cron = (await import('node-cron')).default as any
 const fs = await import('fs/promises')
 
 describe('backupService — валидация (B28)', () => {
@@ -70,27 +75,27 @@ describe('backupService — валидация (B28)', () => {
 
   describe('setSchedule — валидация cron-выражения', () => {
     it('принимает валидное cron-выражение', () => {
-      ;(cron.validate as any).mockReturnValue(true)
-      ;(cron.schedule as any).mockReturnValue({ stop: vi.fn() })
+      mockValidate.mockReturnValue(true)
+      mockSchedule.mockReturnValue({ stop: vi.fn() })
 
       const result = setSchedule('0 3 * * *')
       expect(result.success).toBe(true)
-      expect(cron.schedule).toHaveBeenCalledWith('0 3 * * *', expect.any(Function))
+      expect(mockSchedule).toHaveBeenCalledWith('0 3 * * *', expect.any(Function))
     })
 
     it('отклоняет невалидное cron-выражение', () => {
-      ;(cron.validate as any).mockReturnValue(false)
+      mockValidate.mockReturnValue(false)
 
       const result = setSchedule('not-a-cron')
       expect(result.success).toBe(false)
       expect(result.error).toContain('Некорректное cron-выражение')
-      expect(cron.schedule).not.toHaveBeenCalled()
+      expect(mockSchedule).not.toHaveBeenCalled()
     })
 
     it('пустое выражение отключает расписание', () => {
       const result = setSchedule('')
       expect(result.success).toBe(true)
-      expect(cron.schedule).not.toHaveBeenCalled()
+      expect(mockSchedule).not.toHaveBeenCalled()
     })
   })
 })

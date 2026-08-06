@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const { mockFindMany } = vi.hoisted(() => ({
+  mockFindMany: vi.fn(),
+}))
+
 // Мокаем зависимости managerController
 vi.mock('../../src/config/db.js', () => ({
   prisma: {
     user: {
-      findMany: vi.fn(),
+      findMany: mockFindMany,
     },
   },
 }))
@@ -23,7 +27,6 @@ vi.mock('../../src/services/eventLogService.js', () => ({
 
 const { sendBroadcast } = await import('../../src/controllers/managerController.js')
 const { sendEmail } = await import('../../src/services/emailService.js')
-const { prisma } = await import('../../src/config/db.js')
 
 const mockRes = () => {
   const res: any = {}
@@ -44,7 +47,7 @@ describe('managerController — sendBroadcast', () => {
       { id: 1, email: 'user1@test.com', companyName: 'ООО 1' },
       { id: 2, email: 'user2@test.com', companyName: 'ООО 2' },
     ]
-    ;(prisma.user.findMany as any).mockResolvedValue(recipients)
+    mockFindMany.mockResolvedValue(recipients)
     ;(sendEmail as any).mockResolvedValue(true)
 
     const req: any = {
@@ -66,7 +69,7 @@ describe('managerController — sendBroadcast', () => {
 
   it('экранирует HTML в message (B16)', async () => {
     const recipients = [{ id: 1, email: 'user1@test.com', companyName: 'ООО 1' }]
-    ;(prisma.user.findMany as any).mockResolvedValue(recipients)
+    mockFindMany.mockResolvedValue(recipients)
     ;(sendEmail as any).mockResolvedValue(true)
 
     const req: any = {
@@ -83,7 +86,7 @@ describe('managerController — sendBroadcast', () => {
   })
 
   it('возвращает ошибку, если нет получателей', async () => {
-    ;(prisma.user.findMany as any).mockResolvedValue([])
+    mockFindMany.mockResolvedValue([])
 
     const req: any = {
       body: { recipientIds: [1], subject: 'Тема', message: 'Привет' },
@@ -102,7 +105,7 @@ describe('managerController — sendBroadcast', () => {
       { id: 1, email: 'user1@test.com', companyName: 'ООО 1' },
       { id: 2, email: 'user2@test.com', companyName: 'ООО 2' },
     ]
-    ;(prisma.user.findMany as any).mockResolvedValue(recipients)
+    mockFindMany.mockResolvedValue(recipients)
     ;(sendEmail as any)
       .mockResolvedValueOnce(true)
       .mockRejectedValueOnce(new Error('SMTP fail'))

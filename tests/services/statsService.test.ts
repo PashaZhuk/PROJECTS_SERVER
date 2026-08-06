@@ -10,29 +10,27 @@ vi.mock('../../src/config/db.js', () => ({
   },
 }))
 
-const { getOnlineUsersFromSockets, setIo, getIo } = await import('../../src/services/statsService.js')
+const { getOnlineUsersFromSockets, setIo, getIo, registerSocket, unregisterSocket, clearOnlineUsersMap } = await import('../../src/services/statsService.js')
 
 describe('statsService — online-статусы', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setIo(null as any)
+    clearOnlineUsersMap()
   })
 
   describe('getOnlineUsersFromSockets', () => {
-    it('возвращает нули, если io не установлен', () => {
+    it('возвращает нули, если нет зарегистрированных сокетов', () => {
       const result = getOnlineUsersFromSockets()
       expect(result).toEqual({ onlineUsers: 0, onlineManagers: 0, onlineUserNames: [], onlineManagerNames: [] })
     })
 
     it('считает уникальных USER и MANAGER, игнорирует ADMIN', () => {
-      const mockSockets = new Map([
-        ['s1', { data: { userId: 1, userRole: 'USER', user: { companyName: 'ООО А', name: null } } }],
-        ['s2', { data: { userId: 1, userRole: 'USER', user: { companyName: 'ООО А', name: null } } }], // дубликат
-        ['s3', { data: { userId: 2, userRole: 'MANAGER', user: { companyName: null, name: 'Менеджер' } } }],
-        ['s4', { data: { userId: 3, userRole: 'ADMIN', user: { companyName: null, name: 'Админ' } } }], // игнор
-      ])
-      const mockIo = { sockets: { sockets: mockSockets } }
-      setIo(mockIo as any)
+      // B8: используем registerSocket вместо моков io.sockets
+      registerSocket('s1', 1, 'USER', 'ООО А')
+      registerSocket('s2', 1, 'USER', 'ООО А') // дубликат — тот же userId
+      registerSocket('s3', 2, 'MANAGER', 'Менеджер')
+      registerSocket('s4', 3, 'ADMIN', 'Админ') // игнор
 
       const result = getOnlineUsersFromSockets()
       expect(result.onlineUsers).toBe(1)
@@ -42,15 +40,23 @@ describe('statsService — online-статусы', () => {
     })
 
     it('не добавляет пустые имена', () => {
-      const mockSockets = new Map([
-        ['s1', { data: { userId: 1, userRole: 'USER', user: { companyName: null, name: null } } }],
-      ])
-      const mockIo = { sockets: { sockets: mockSockets } }
-      setIo(mockIo as any)
+      registerSocket('s1', 1, 'USER', '')
 
       const result = getOnlineUsersFromSockets()
       expect(result.onlineUsers).toBe(1)
       expect(result.onlineUserNames).toEqual([])
+    })
+
+    it('удаляет пользователя из Map при unregister последнего сокета', () => {
+      registerSocket('s1', 1, 'USER', 'ООО А')
+      registerSocket('s2', 1, 'USER', 'ООО А')
+      expect(getOnlineUsersFromSockets().onlineUsers).toBe(1)
+
+      unregisterSocket('s1', 1)
+      expect(getOnlineUsersFromSockets().onlineUsers).toBe(1) // ещё есть s2
+
+      unregisterSocket('s2', 1)
+      expect(getOnlineUsersFromSockets().onlineUsers).toBe(0) // все сокеты ушли
     })
   })
 

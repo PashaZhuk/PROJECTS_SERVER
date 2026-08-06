@@ -1,9 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
+// Мокаем Socket.io — getIo должен возвращать объект с to() и sockets
+const mockSocketIo = {
+  sockets: {
+    sockets: new Map(),
+    forEach: vi.fn(),
+  },
+  to: vi.fn(() => ({
+    emit: vi.fn(),
+  })),
+}
+
 vi.mock('../../src/services/statsService.js', () => ({
   emitStatsUpdate: vi.fn(),
-  getIo: vi.fn(() => null),
+  emitUserLockStatus: vi.fn(),
+  getIo: vi.fn(() => mockSocketIo),
   getOnlineUsersFromSockets: vi.fn(() => ({ onlineUsers: 0, onlineManagers: 0 })),
+  getOnlineUserIds: vi.fn(() => new Set<number>()),
 }))
 
 const { registerUser } = await import('../../src/services/authService.js')

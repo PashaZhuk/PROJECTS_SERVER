@@ -1,5 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
-import type { Response } from 'express'
+import { describe, it, expect } from 'vitest'
 
 const { sendSuccess, sendError } = await import('../../src/utils/response.js')
 
