@@ -19,6 +19,14 @@ export default defineConfig({
     // vmThreads протекал: тестовые моки (emailService transporter/logger) попадали
     // в другие файлы → недетерминированные падения полного прогона (0–37 failed).
     pool: 'forks',
+    poolOptions: {
+      forks: {
+        // Обходной путь для запуска из IDE (VS Code/Roo): расширения инжектят
+        // свои флаги в execArgv дочерних node-процессов → форки vitest падали
+        // «failed to find the runner» / «Cannot read properties of undefined (reading 'config')».
+        execArgv: [],
+      },
+    },
     fileParallelism: false,
     // Исключаем dist — vitest не должен подхватывать скомпилированные тесты
     exclude: ['node_modules/**', 'dist/**', 'backups/**', 'logs/**'],
