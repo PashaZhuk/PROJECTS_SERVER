@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config'
 
+// Windows-костыль: vite/vitest резолвят пути case-sensitively. Если терминал
+// открыт со строчной буквой диска (d:\Hermes\...) — ломается загрузка конфига
+// и моков («Cannot read properties of undefined (reading 'config')»,
+// «failed to find the runner»). Нормализуем букву диска в верхний регистр.
+const normalizedRoot = process.cwd().replace(/^([a-z]):/, (_m, letter: string) => `${letter.toUpperCase()}:`)
+
 export default defineConfig({
+  root: normalizedRoot,
   test: {
     environment: 'node',
     globalSetup: ['./tests/globalSetup.ts'],
